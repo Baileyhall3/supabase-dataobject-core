@@ -49,6 +49,10 @@ export class DataObjectManager {
 
         try {
             const dataObject = new DataObject(this.config.supabaseConfig, options, this.config.errorHandler);
+            
+            // Wait for the data object to be ready (data loaded)
+            await dataObject.waitForReady();
+            
             const storedDataObject: StoredDataObject = {
                 id: name,
                 name,

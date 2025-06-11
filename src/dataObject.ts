@@ -14,6 +14,8 @@ export class DataObject {
     private data: DataObjectRecord[] = [];
     private eventEmitter = new EventEmitter<DataObjectRecord[]>();
     private errorHandler?: DataObjectErrorHandler;
+    private _isReady: boolean = false;
+    private _readyPromise: Promise<void>;
     
     public readonly onDataChanged = this.eventEmitter.event;
 
@@ -21,7 +23,15 @@ export class DataObject {
         this.supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey);
         this.options = options;
         this.errorHandler = errorHandler;
-        this.loadData();
+        this._readyPromise = this.loadData();
+    }
+
+    public get isReady(): boolean {
+        return this._isReady;
+    }
+
+    public async waitForReady(): Promise<void> {
+        await this._readyPromise;
     }
 
     private handleError(message: string): void {
@@ -97,13 +107,16 @@ export class DataObject {
 
             if (error) {
                 this.handleError(`Error loading data: ${error.message}`);
+                this._isReady = true; // Mark as ready even if there's an error
                 return;
             }
 
             this.data = data || [];
+            this._isReady = true; // Mark as ready when data is loaded
             this.eventEmitter.fire(this.data);
         } catch (error) {
             this.handleError(`Error loading data: ${error}`);
+            this._isReady = true; // Mark as ready even if there's an error
         }
     }
 

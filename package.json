@@ -1,0 +1,54 @@
+{
+  "name": "supabase-dataobject-core",
+  "version": "1.0.0",
+  "description": "Core library for creating reactive data objects from Supabase tables and views",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run build",
+    "test": "jest",
+    "lint": "eslint src --ext .ts",
+    "clean": "rimraf dist"
+  },
+  "keywords": [
+    "supabase",
+    "database",
+    "reactive",
+    "data",
+    "crud",
+    "typescript",
+    "orm"
+  ],
+  "author": "BHDesign",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Baileyhall3/supabase-dataobject-core"
+  },
+  "bugs": {
+    "url": "https://github.com/Baileyhall3/supabase-dataobject-core/issues"
+  },
+  "homepage": "https://github.com/Baileyhall3/supabase-dataobject-core#readme",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@supabase/supabase-js": "^2.50.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

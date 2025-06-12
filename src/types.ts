@@ -20,6 +20,7 @@ export interface WhereClause {
 
 export interface DataObjectOptions {
     viewName: string;
+    tableName?: string;
     fields?: DataObjectField[];
     whereClauses?: WhereClause[];
     sort?: SortConfig;
@@ -49,4 +50,26 @@ export interface StoredDataObject {
     options: DataObjectOptions;
     dataObject: any; // Will be properly typed when DataObject is imported
     createdAt: Date;
+}
+
+export type DataObjectEvents = {
+    beforeLoad: [options: DataObjectCancelableEvent & DataObjectOptions];
+    afterLoad: [data: DataObjectRecord[]];
+
+    beforeRefresh: [options: DataObjectCancelableEvent & DataObjectOptions];
+    afterRefresh: [data: DataObjectRecord[]];
+
+    beforeInsert: [options: DataObjectCancelableEvent & DataObjectOptions, record: Partial<DataObjectRecord>];
+    afterInsert: [record: DataObjectRecord];
+
+    beforeUpdate: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord, updates: Partial<DataObjectRecord>];
+    afterUpdate: [record: DataObjectRecord, updates: Partial<DataObjectRecord>];
+
+    beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord];
+    afterDelete: [id: string | number];
+}
+
+export interface DataObjectCancelableEvent {
+    cancelEvent?: boolean;
+    cancel?: () => void;
 }

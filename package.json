@@ -1,6 +1,6 @@
 {
   "name": "supabase-dataobject-core",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Core library for creating reactive data objects from Supabase tables and views",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

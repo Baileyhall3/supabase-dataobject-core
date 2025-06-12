@@ -39,7 +39,8 @@ initializeDataObjectManager({
 
 // Create a data object
 const userDataObject = await createDataObject('users', {
-  viewName: 'users',
+  viewName: 'users_with_details',
+  tableName: 'users',
   canInsert: true,
   canUpdate: true,
   canDelete: false
@@ -64,7 +65,8 @@ if (users) {
 import { createDataObject } from 'supabase-dataobject-core';
 
 const ordersDataObject = await createDataObject('pendingOrders', {
-  viewName: 'orders',
+  viewName: 'orders_and_payments',
+  tableName: 'orders',
   fields: [
     { name: 'id', type: 'number' },
     { name: 'customer_name', type: 'string' },
@@ -153,6 +155,7 @@ await refreshDataObject('myData');
 - `delete(id)`: Delete a record
 - `dispose()`: Clean up the data object
 - `onDataChanged(callback)`: Listen for data changes
+- `on('eventName', options)`: Data object 'on' events
 
 #### Example
 
@@ -179,6 +182,12 @@ if (dataObject) {
   const unsubscribe = dataObject.onDataChanged((data) => {
     console.log('Data updated:', data);
   });
+
+  dataObject.lifeCycleEvents.on('beforeUpdate', (options, record, updates) => {
+    if (record.status === 'locked') {
+      options.cancelEvent = true;
+    }
+  });
   
   // Clean up listener
   unsubscribe();
@@ -191,7 +200,8 @@ if (dataObject) {
 
 ```typescript
 interface DataObjectOptions {
-  viewName: string;                    // Table or view name
+  viewName: string;                    // View name
+  tableName?: string;                  // Table name - required for CRUD operations
   fields?: DataObjectField[];          // Specific fields to select
   whereClauses?: WhereClause[];        // Filter conditions
   sort?: SortConfig;                   // Sorting configuration

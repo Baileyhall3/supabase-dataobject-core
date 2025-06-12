@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { DataObjectOptions, DataObjectRecord, SupportedOperator, WhereClause, SupabaseConfig } from './types';
+import { DataObjectOptions, DataObjectRecord, SupportedOperator, WhereClause, SupabaseConfig, DataObjectEvents, DataObjectCancelableEvent } from './types';
 import { EventEmitter } from './eventEmitter';
+import { NamedEventEmitter } from './namedEventEmitter';
 
 export interface DataObjectErrorHandler {
     onError?: (error: string) => void;
@@ -12,16 +13,23 @@ export class DataObject {
     private supabase: SupabaseClient;
     private options: DataObjectOptions;
     private data: DataObjectRecord[] = [];
-    private eventEmitter = new EventEmitter<DataObjectRecord[]>();
     private errorHandler?: DataObjectErrorHandler;
     private _isReady: boolean = false;
     private _readyPromise: Promise<void>;
     
+    private eventEmitter = new EventEmitter<DataObjectRecord[]>();
     public readonly onDataChanged = this.eventEmitter.event;
+
+    private lifeCycleEvents = new NamedEventEmitter<DataObjectEvents>();
+    public readonly on = this.lifeCycleEvents.on.bind(this.lifeCycleEvents);
+
+    public get recordCount(): number {
+        return this.data.length;
+    }
 
     constructor(supabaseConfig: SupabaseConfig, options: DataObjectOptions, errorHandler?: DataObjectErrorHandler) {
         this.supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey);
-        this.options = options;
+        this.options = this.setDefaultOptions(options);
         this.errorHandler = errorHandler;
         this._readyPromise = this.loadData();
     }
@@ -59,6 +67,14 @@ export class DataObject {
     }
 
     private async loadData(): Promise<void> {
+        const cancelToken: DataObjectCancelableEvent & DataObjectOptions = {
+            ...this.options,
+            cancel: () => { cancelToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+        this.lifeCycleEvents.emit('beforeLoad', cancelToken);
+
+        if (cancelToken.cancelEvent) { return; }
         try {
             // Start with base query
             let query: any = this.supabase.from(this.options.viewName);
@@ -112,10 +128,11 @@ export class DataObject {
             }
 
             this.data = data || [];
-            this._isReady = true; // Mark as ready when data is loaded
             this.eventEmitter.fire(this.data);
+            this.lifeCycleEvents.emit('afterLoad', this.data);
         } catch (error) {
             this.handleError(`Error loading data: ${error}`);
+        } finally {
             this._isReady = true; // Mark as ready even if there's an error
         }
     }
@@ -125,18 +142,36 @@ export class DataObject {
     }
 
     public async refresh(): Promise<void> {
+        const refreshToken: DataObjectCancelableEvent & DataObjectOptions = {
+            ...this.options,
+            cancel: () => { refreshToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+        this.lifeCycleEvents.emit('beforeRefresh', refreshToken);
+        if (refreshToken.cancelEvent) { return; }
+
         await this.loadData();
+
+        this.lifeCycleEvents.emit('afterRefresh', this.data);
     }
 
     public async insert(record: Partial<DataObjectRecord>): Promise<boolean> {
-        if (!this.options.canInsert) {
+        if (!this.options.canInsert || !this.options.tableName) {
             this.handleWarning('Insert operation is not allowed for this data object');
             return false;
         }
 
+        const insertToken: DataObjectCancelableEvent & DataObjectOptions = {
+            ...this.options,
+            cancel: () => { insertToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+        this.lifeCycleEvents.emit('beforeInsert', insertToken, record);
+        if (insertToken.cancelEvent) { return false; }
+
         try {
             const { data, error } = await this.supabase
-                .from(this.options.viewName)
+                .from(this.options.tableName)
                 .insert(record)
                 .select();
 
@@ -144,6 +179,8 @@ export class DataObject {
                 this.handleError(`Error inserting record: ${error.message}`);
                 return false;
             }
+
+            this.lifeCycleEvents.emit('afterInsert', data[0]);
 
             // Refresh data to get the latest state
             await this.refresh();
@@ -156,14 +193,25 @@ export class DataObject {
     }
 
     public async update(id: any, updates: Partial<DataObjectRecord>): Promise<boolean> {
-        if (!this.options.canUpdate) {
+        if (!this.options.canUpdate || !this.options.tableName) {
             this.handleWarning('Update operation is not allowed for this data object');
             return false;
         }
+        
+        const record = this.data.find(x => x.id === id);
+        if (!record) { return false; }
+
+        const updateToken: DataObjectCancelableEvent & DataObjectOptions = {
+            ...this.options,
+            cancel: () => { updateToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+        this.lifeCycleEvents.emit('beforeUpdate', updateToken, record, updates);
+        if (updateToken.cancelEvent) { return false; }
 
         try {
             const { error } = await this.supabase
-                .from(this.options.viewName)
+                .from(this.options.tableName)
                 .update(updates)
                 .eq('id', id);
 
@@ -172,8 +220,14 @@ export class DataObject {
                 return false;
             }
 
+            
             // Refresh data to get the latest state
             await this.refresh();
+
+            const updatedRecord = this.data.find(x => x.id === id);
+            if (updatedRecord) {
+                this.lifeCycleEvents.emit('afterUpdate', updatedRecord, updates);
+            }
             this.handleInfo('Record updated successfully');
             return true;
         } catch (error) {
@@ -183,14 +237,25 @@ export class DataObject {
     }
 
     public async delete(id: any): Promise<boolean> {
-        if (!this.options.canDelete) {
+        if (!this.options.canDelete || !this.options.tableName) {
             this.handleWarning('Delete operation is not allowed for this data object');
             return false;
         }
 
+        const record = this.data.find(x => x.id === id);
+        if (!record) { return false; }
+
+        const deleteToken: DataObjectCancelableEvent & DataObjectOptions = {
+            ...this.options,
+            cancel: () => { deleteToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+        this.lifeCycleEvents.emit('beforeDelete', deleteToken, record);
+        if (deleteToken.cancelEvent) { return false; }
+
         try {
             const { error } = await this.supabase
-                .from(this.options.viewName)
+                .from(this.options.tableName)
                 .delete()
                 .eq('id', id);
 
@@ -201,6 +266,7 @@ export class DataObject {
 
             // Refresh data to get the latest state
             await this.refresh();
+            this.lifeCycleEvents.emit('afterDelete', id);
             this.handleInfo('Record deleted successfully');
             return true;
         } catch (error) {
@@ -211,10 +277,21 @@ export class DataObject {
 
     public dispose(): void {
         this.eventEmitter.dispose();
+        this.lifeCycleEvents.clearAll();
     }
 
     public getOptions(): DataObjectOptions {
         return { ...this.options };
+    }
+
+    private setDefaultOptions(options: DataObjectOptions): DataObjectOptions {
+        return {
+            ...options,
+            recordLimit: options.recordLimit ?? 100,
+            canInsert: options.tableName ? (options.canInsert ?? false) : false,
+            canUpdate: options.tableName ? (options.canUpdate ?? false) : false,
+            canDelete: options.tableName ? (options.canDelete ?? false) : false,
+        };
     }
 
     public getSupabaseClient(): SupabaseClient {

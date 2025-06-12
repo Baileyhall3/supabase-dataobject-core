@@ -11,7 +11,8 @@ supabase-dataobject-core/
 ├── src/
 │   ├── index.ts              # Main exports
 │   ├── types.ts              # Type definitions
-│   ├── eventEmitter.ts       # Custom event emitter (VSCode-free)
+│   ├── eventEmitter.ts       # Custom event emitter
+│   ├── namedEventEmitter.ts  # Custom named event emitter
 │   ├── dataObject.ts         # Core DataObject class
 │   └── dataObjectManager.ts  # Manager for named data objects
 ├── examples/
@@ -38,7 +39,8 @@ supabase-dataobject-core/
 - Memory management and cleanup
 
 ### 3. **Event System**
-- Custom `EventEmitter` class replacing VSCode's EventEmitter
+- Custom `EventEmitter` class
+- Custom `NamedEventEmitter` class for before/after dataObject events (save, insert, update, etc.)
 - Reactive data updates
 - Proper cleanup and disposal
 
@@ -67,7 +69,8 @@ initializeDataObjectManager({
 
 // Create data object
 const users = await createDataObject('users', {
-  viewName: 'users',
+  viewName: 'users_with_details',
+  tableName: 'users',
   canInsert: true,
   canUpdate: true,
   canDelete: false

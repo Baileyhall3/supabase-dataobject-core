@@ -23,8 +23,14 @@ export class DataObject {
     private lifeCycleEvents = new NamedEventEmitter<DataObjectEvents>();
     public readonly on = this.lifeCycleEvents.on.bind(this.lifeCycleEvents);
 
+    private _currentRecord: DataObjectRecord | undefined;
+
     public get recordCount(): number {
         return this.data.length;
+    }
+
+    public get currentRecord(): DataObjectRecord | undefined {
+        return this._currentRecord;
     }
 
     constructor(supabaseConfig: SupabaseConfig, options: DataObjectOptions, errorHandler?: DataObjectErrorHandler) {
@@ -128,6 +134,11 @@ export class DataObject {
             }
 
             this.data = data || [];
+
+            if (data.length > 0) {
+                this._currentRecord = data[0];
+            }
+            
             this.eventEmitter.fire(this.data);
             this.lifeCycleEvents.emit('afterLoad', this.data);
         } catch (error) {

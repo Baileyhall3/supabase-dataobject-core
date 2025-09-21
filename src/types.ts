@@ -4,7 +4,7 @@ export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessth
 
 export interface DataObjectField {
     name: string;
-    type: DataObjectFieldType;
+    type?: DataObjectFieldType;
 }
 
 export interface SortConfig {
@@ -28,6 +28,7 @@ export interface DataObjectOptions {
     canInsert?: boolean;
     canUpdate?: boolean;
     canDelete?: boolean;
+    masterDataObjectBinding?: MasterDataObjectBinding;
 }
 
 export interface SupabaseConfig {
@@ -72,4 +73,10 @@ export type DataObjectEvents = {
 export interface DataObjectCancelableEvent {
     cancelEvent?: boolean;
     cancel?: () => void;
+}
+
+export interface MasterDataObjectBinding {
+    masterDataObjectId: string;
+    childBindingField: string;
+    masterBindingField: string;
 }

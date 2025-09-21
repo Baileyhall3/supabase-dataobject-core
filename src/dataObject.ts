@@ -1,5 +1,15 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { DataObjectOptions, DataObjectRecord, SupportedOperator, WhereClause, SupabaseConfig, DataObjectEvents, DataObjectCancelableEvent } from './types';
+import { 
+    DataObjectOptions, 
+    DataObjectRecord, 
+    SupportedOperator, 
+    WhereClause, 
+    SupabaseConfig, 
+    DataObjectEvents, 
+    DataObjectCancelableEvent,
+    DataObjectField,
+    MasterDataObjectBinding
+} from './types';
 import { EventEmitter } from './eventEmitter';
 import { NamedEventEmitter } from './namedEventEmitter';
 
@@ -24,6 +34,12 @@ export class DataObject {
     public readonly on = this.lifeCycleEvents.on.bind(this.lifeCycleEvents);
 
     private _currentRecord: DataObjectRecord | undefined;
+    private _fields: DataObjectField[] = [];
+    
+    // Master data object binding properties
+    private masterDataObject: DataObject | null = null;
+    private masterDataObjectBinding: MasterDataObjectBinding | null = null;
+    private masterDataChangeListener: (() => void) | null = null;
 
     public get recordCount(): number {
         return this.data.length;
@@ -33,15 +49,33 @@ export class DataObject {
         return this._currentRecord;
     }
 
-    constructor(supabaseConfig: SupabaseConfig, options: DataObjectOptions, errorHandler?: DataObjectErrorHandler) {
-        this.supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey);
-        this.options = this.setDefaultOptions(options);
-        this.errorHandler = errorHandler;
-        this._readyPromise = this.loadData();
+    public get fields(): DataObjectField[] {
+        return this._fields;
     }
 
     public get isReady(): boolean {
         return this._isReady;
+    }
+
+    constructor(
+        supabaseConfig: SupabaseConfig, 
+        options: DataObjectOptions, 
+        errorHandler?: DataObjectErrorHandler
+    ) {
+        this.supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey);
+        this.options = this.setDefaultOptions(options);
+        this.errorHandler = errorHandler;
+        this._readyPromise = this.initializeDataObject();
+    }
+
+    private async initializeDataObject(): Promise<void> {
+        // Set up master data object binding if specified
+        if (this.options.masterDataObjectBinding) {
+            await this.setupMasterDataObjectBinding(this.options.masterDataObjectBinding);
+        }
+        
+        // Load data
+        await this.loadData();
     }
 
     public async waitForReady(): Promise<void> {
@@ -87,6 +121,7 @@ export class DataObject {
 
             // Apply select fields
             if (this.options.fields && this.options.fields.length > 0) {
+                this._fields = this.options.fields;
                 const fieldNames = this.options.fields.map(f => f.name).join(',');
                 query = query.select(fieldNames);
             } else {
@@ -136,7 +171,16 @@ export class DataObject {
             this.data = data || [];
 
             if (data.length > 0) {
-                this._currentRecord = data[0];
+                // Set currentRecord to first record
+                this._currentRecord = this.data[0];
+                
+                // Infer and set fields
+                if (!this.options.fields || this.options.fields.length === 0) {
+                    this._fields = Object.keys(this._currentRecord).map(key => ({
+                        name: key,
+                        type: undefined
+                    }));
+                }
             }
             
             this.eventEmitter.fire(this.data);
@@ -287,8 +331,144 @@ export class DataObject {
     }
 
     public dispose(): void {
+        // Clean up master data object binding
+        if (this.masterDataChangeListener && this.masterDataObject) {
+            this.masterDataObject.onDataChanged(this.masterDataChangeListener);
+        }
+        
         this.eventEmitter.dispose();
         this.lifeCycleEvents.clearAll();
+    }
+
+    private async setupMasterDataObjectBinding(binding: MasterDataObjectBinding): Promise<void> {
+        try {
+            // Get the master data object from the manager
+            const masterDataObject = await this.getMasterDataObjectFromManager(binding.masterDataObjectId);
+            
+            if (!masterDataObject) {
+                // Silently fail as requested
+                return;
+            }
+
+            // Wait for master data object to be ready
+            await masterDataObject.waitForReady();
+
+            // Validate binding fields
+            if (!this.validateBindingFields(binding, masterDataObject)) {
+                // Silently fail as requested
+                return;
+            }
+
+            // Set up the binding
+            this.masterDataObject = masterDataObject;
+            this.masterDataObjectBinding = binding;
+
+            // Add the initial where clause based on master's current record
+            this.addMasterBindingWhereClause();
+
+            // Set up listener for master data object changes
+            this.setupMasterDataChangeListener();
+
+            this.handleInfo(`Master data object binding established with '${binding.masterDataObjectId}'`);
+        } catch (error) {
+            // Silently fail as requested
+            this.handleWarning(`Failed to setup master data object binding: ${error}`);
+        }
+    }
+
+    private async getMasterDataObjectFromManager(masterDataObjectId: string): Promise<DataObject | null> {
+        try {
+            // Import DataObjectManager dynamically to avoid circular dependency
+            const { DataObjectManager } = await import('./dataObjectManager');
+            const manager = DataObjectManager.getInstance();
+            return manager.getDataObjectById(masterDataObjectId);
+        } catch (error) {
+            return null;
+        }
+    }
+
+    private validateBindingFields(binding: MasterDataObjectBinding, masterDataObject: DataObject): boolean {
+        // Check if child binding field exists in this data object's fields
+        const childFieldExists = this._fields.some(field => field.name === binding.childBindingField);
+        if (!childFieldExists) {
+            return false;
+        }
+
+        // Check if master binding field exists in master data object's fields
+        const masterFields = masterDataObject.fields;
+        const masterFieldExists = masterFields.some(field => field.name === binding.masterBindingField);
+        if (!masterFieldExists) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private addMasterBindingWhereClause(): void {
+        if (!this.masterDataObject || !this.masterDataObjectBinding) {
+            return;
+        }
+
+        const masterCurrentRecord = this.masterDataObject.currentRecord;
+        if (!masterCurrentRecord) {
+            return;
+        }
+
+        const masterFieldValue = masterCurrentRecord[this.masterDataObjectBinding.masterBindingField];
+        if (masterFieldValue === undefined || masterFieldValue === null) {
+            return;
+        }
+
+        // Remove any existing binding where clause
+        this.removeMasterBindingWhereClause();
+
+        // Add new where clause
+        const bindingWhereClause: WhereClause = {
+            field: this.masterDataObjectBinding.childBindingField,
+            operator: 'equals',
+            value: masterFieldValue
+        };
+
+        if (!this.options.whereClauses) {
+            this.options.whereClauses = [];
+        }
+
+        this.options.whereClauses.push(bindingWhereClause);
+    }
+
+    private removeMasterBindingWhereClause(): void {
+        if (!this.masterDataObjectBinding || !this.options.whereClauses) {
+            return;
+        }
+
+        // Remove where clauses that match the child binding field
+        this.options.whereClauses = this.options.whereClauses.filter(
+            clause => clause.field !== this.masterDataObjectBinding!.childBindingField
+        );
+    }
+
+    private setupMasterDataChangeListener(): void {
+        if (!this.masterDataObject) {
+            return;
+        }
+
+        this.masterDataChangeListener = () => {
+            this.onMasterDataChanged();
+        };
+
+        this.masterDataObject.onDataChanged(this.masterDataChangeListener);
+    }
+
+    private async onMasterDataChanged(): Promise<void> {
+        if (!this.masterDataObject || !this.masterDataObjectBinding) {
+            return;
+        }
+
+        // Update the where clause with new master field value
+        this.addMasterBindingWhereClause();
+
+        // Refresh this data object with the new where clause
+        await this.refresh();
     }
 
     public getOptions(): DataObjectOptions {

@@ -48,6 +48,21 @@ export class DataObjectManager {
         }
 
         try {
+            // If there's a master data object binding, check if the master exists
+            if (options.masterDataObjectBinding) {
+                const masterExists = this.dataObjects.has(options.masterDataObjectBinding.masterDataObjectId);
+                if (!masterExists) {
+                    const warningMsg = `Master data object '${options.masterDataObjectBinding.masterDataObjectId}' not found. Creating data object '${name}' without binding.`;
+                    if (this.config.errorHandler?.onWarning) {
+                        this.config.errorHandler.onWarning(warningMsg);
+                    } else {
+                        console.warn(warningMsg);
+                    }
+                    // Remove the binding from options to prevent errors
+                    options = { ...options, masterDataObjectBinding: undefined };
+                }
+            }
+
             const dataObject = new DataObject(this.config.supabaseConfig, options, this.config.errorHandler);
             
             // Wait for the data object to be ready (data loaded)

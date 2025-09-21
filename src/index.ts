@@ -25,7 +25,8 @@ export type {
     SupabaseConfig,
     DataObjectRecord,
     NamedDataObjectOptions,
-    StoredDataObject
+    StoredDataObject,
+    MasterDataObjectBinding
 } from './types';
 
 export type { DataObjectErrorHandler } from './dataObject';

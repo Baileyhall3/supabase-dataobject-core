@@ -19,15 +19,42 @@ export interface WhereClause {
 }
 
 export interface DataObjectOptions {
+    /** The name of the view to select data from. */
     viewName: string;
+    /** The table for which to perform CRUD operations on. */
     tableName?: string;
+    /** An array of fields from the view to get values from. Data will be returned for the specified fields only.
+     * Leave blank to include all fields.
+     */
     fields?: DataObjectField[];
+    /** Array of where clauses to be applied when retrieving data from the view. */
     whereClauses?: WhereClause[];
+    /** Sorting to be applied to the returned data based on specified field and direction. */
     sort?: SortConfig;
+    /** When specified, will only return the first x amount of records.
+     * Leave blank to return all records.
+     */
     recordLimit?: number;
+    /** Controls whether or not the data object can be inserted into.
+     * Will be overridden to false if no tableName defined, as cannnot insert into a view.
+     * Default is false.
+     */
     canInsert?: boolean;
+    /** Controls whether a data object can be updated.
+     * Will be overriden to false if no tableName defined, as cannot update records from a view.
+     * Default is false.
+     */
     canUpdate?: boolean;
+    /** Controls whether a data object can be updated.
+     * Will be overriden to false if no tableName defined, as cannot delete from a view.
+     * Default is false.
+     */
     canDelete?: boolean;
+    /** The binding to this data object's master data object. 
+     * Use this when the currentRecord of one data object directly informs the returned data of the other.
+     * The master data object must be defined and initialized first, before adding a child data object.
+     * When defining thebinding fields, note that their values must match identically for this to work.
+     */
     masterDataObjectBinding?: MasterDataObjectBinding;
 }
 

@@ -22,7 +22,7 @@ export interface DataObjectErrorHandler {
 export class DataObject {
     private supabase: SupabaseClient;
     private options: DataObjectOptions;
-    private data: DataObjectRecord[] = [];
+    public data: DataObjectRecord[] = [];
     private errorHandler?: DataObjectErrorHandler;
     private _isReady: boolean = false;
     private _readyPromise: Promise<void>;

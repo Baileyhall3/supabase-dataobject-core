@@ -22,10 +22,13 @@ export interface DataObjectErrorHandler {
 export class DataObject {
     private supabase: SupabaseClient;
     private options: DataObjectOptions;
-    public data: DataObjectRecord[] = [];
     private errorHandler?: DataObjectErrorHandler;
     private _isReady: boolean = false;
     private _readyPromise: Promise<void>;
+    
+    public data: DataObjectRecord[] = [];
+    private _originalData: DataObjectRecord[] = [];
+    private _pendingChanges: Map<any, Partial<DataObjectRecord>> = new Map();
     
     private eventEmitter = new EventEmitter<DataObjectRecord[]>();
     public readonly onDataChanged = this.eventEmitter.event;
@@ -57,6 +60,10 @@ export class DataObject {
         return this._isReady;
     }
 
+    public get hasChanges(): boolean {
+        return this._pendingChanges.size > 0;
+    }
+
     constructor(
         supabaseConfig: SupabaseConfig, 
         options: DataObjectOptions, 
@@ -69,12 +76,10 @@ export class DataObject {
     }
 
     private async initializeDataObject(): Promise<void> {
-        // Set up master data object binding if specified
         if (this.options.masterDataObjectBinding) {
             await this.setupMasterDataObjectBinding(this.options.masterDataObjectBinding);
         }
         
-        // Load data
         await this.loadData();
     }
 
@@ -106,6 +111,7 @@ export class DataObject {
         }
     }
 
+    // #region Load Operations
     private async loadData(): Promise<void> {
         const cancelToken: DataObjectCancelableEvent & DataObjectOptions = {
             ...this.options,
@@ -168,7 +174,17 @@ export class DataObject {
                 return;
             }
 
-            this.data = data || [];
+            // assign raw data first
+            const rawData = data || [];
+
+            // create a deep clone of data
+            this._originalData = JSON.parse(JSON.stringify(rawData));
+
+            // clear any previous change tracking
+            this._pendingChanges.clear();
+
+            // wrap each record in a reactive Proxy
+            this.data = rawData.map((record: DataObjectRecord) => this.createReactiveRecord(record));
 
             if (data.length > 0) {
                 // Set currentRecord to first record
@@ -210,6 +226,7 @@ export class DataObject {
         this.lifeCycleEvents.emit('afterRefresh', this.data);
     }
 
+    // #region CRUD
     public async insert(record: Partial<DataObjectRecord>): Promise<boolean> {
         if (!this.options.canInsert || !this.options.tableName) {
             this.handleWarning('Insert operation is not allowed for this data object');
@@ -305,6 +322,7 @@ export class DataObject {
             cancel: () => { deleteToken.cancelEvent = true; },
             cancelEvent: false,
         };
+
         this.lifeCycleEvents.emit('beforeDelete', deleteToken, record);
         if (deleteToken.cancelEvent) { return false; }
 
@@ -330,16 +348,37 @@ export class DataObject {
         }
     }
 
-    public dispose(): void {
-        // Clean up master data object binding
-        if (this.masterDataChangeListener && this.masterDataObject) {
-            this.masterDataObject.onDataChanged(this.masterDataChangeListener);
+    public async saveChanges(): Promise<void> {
+        if (this._pendingChanges.size === 0) {
+            this.handleInfo("No changes to save.");
+            return;
         }
-        
-        this.eventEmitter.dispose();
-        this.lifeCycleEvents.clearAll();
+
+        if (!this.options.tableName) {
+            this.handleWarning("No tableName specified — cannot save changes.");
+            return;
+        }
+
+        for (const [id, updates] of this._pendingChanges.entries()) {
+            await this.update(id, updates);
+        }
+
+        this._pendingChanges.clear();
+        this._originalData = JSON.parse(JSON.stringify(this.data));
+        this.handleInfo("All changes saved successfully.");
     }
 
+    public cancelChanges(): void {
+        this.data = JSON.parse(JSON.stringify(this._originalData))
+            .map((record: DataObjectRecord) => this.createReactiveRecord(record));
+
+        this._pendingChanges.clear();
+        this.eventEmitter.fire(this.data);
+        this.handleInfo("All changes reverted.");
+    }
+
+    // #region Master Binding
+    // TODO: Move this to different file
     private async setupMasterDataObjectBinding(binding: MasterDataObjectBinding): Promise<void> {
         try {
             // Get the master data object from the manager
@@ -471,6 +510,32 @@ export class DataObject {
         await this.refresh();
     }
 
+    // #region Helpers
+    private createReactiveRecord(record: DataObjectRecord): DataObjectRecord {
+        const handler: ProxyHandler<DataObjectRecord> = {
+            set: (target, prop, value) => {
+                const key = prop as keyof DataObjectRecord;
+
+                // Only track if value actually changed
+                if (target[key] !== value) {
+                    target[key] = value;
+                    if (!this._pendingChanges.has(target.id)) {
+                        this._pendingChanges.set(target.id, {});
+                    }
+                    const pending = this._pendingChanges.get(target.id)!;
+                    pending[key] = value;
+                    
+                    this.lifeCycleEvents.emit('fieldChanged', record, pending);
+                    this.eventEmitter.fire(this.data);
+                }
+                return true;
+            }
+        };
+
+        return new Proxy(record, handler);
+    }
+
+
     public getOptions(): DataObjectOptions {
         return { ...this.options };
     }
@@ -483,6 +548,16 @@ export class DataObject {
             canUpdate: options.tableName ? (options.canUpdate ?? false) : false,
             canDelete: options.tableName ? (options.canDelete ?? false) : false,
         };
+    }
+
+    public dispose(): void {
+        // Clean up master data object binding
+        if (this.masterDataChangeListener && this.masterDataObject) {
+            this.masterDataObject.onDataChanged(this.masterDataChangeListener);
+        }
+        
+        this.eventEmitter.dispose();
+        this.lifeCycleEvents.clearAll();
     }
 
     public getSupabaseClient(): SupabaseClient {

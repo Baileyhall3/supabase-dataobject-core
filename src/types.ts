@@ -95,6 +95,8 @@ export type DataObjectEvents = {
 
     beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord];
     afterDelete: [id: string | number];
+
+    fieldChanged: [record: DataObjectRecord, updates: Partial<DataObjectRecord>]
 }
 
 export interface DataObjectCancelableEvent {

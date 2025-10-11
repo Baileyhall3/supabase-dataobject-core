@@ -264,7 +264,11 @@ export class DataObject {
         }
     }
 
-    public async update(id: any, updates: Partial<DataObjectRecord>): Promise<boolean> {
+    public async update(
+        id: any, 
+        updates: Partial<DataObjectRecord>, 
+        skipRefresh: boolean = false
+    ): Promise<boolean> {
         if (!this.options.canUpdate || !this.options.tableName) {
             this.handleWarning('Update operation is not allowed for this data object');
             return false;
@@ -291,10 +295,10 @@ export class DataObject {
                 this.handleError(`Error updating record: ${error.message}`);
                 return false;
             }
-
             
-            // Refresh data to get the latest state
-            await this.refresh();
+            if (!skipRefresh) {
+                await this.refresh();
+            }
 
             const updatedRecord = this.data.find(x => x.id === id);
             if (updatedRecord) {
@@ -359,13 +363,23 @@ export class DataObject {
             return;
         }
 
-        for (const [id, updates] of this._pendingChanges.entries()) {
-            await this.update(id, updates);
-        }
+        const pendingEntries = Array.from(this._pendingChanges.entries());
 
-        this._pendingChanges.clear();
-        this._originalData = JSON.parse(JSON.stringify(this.data));
-        this.handleInfo("All changes saved successfully.");
+        try {
+            // Perform all updates in parallel, skipping refresh for each
+            await Promise.all(
+                pendingEntries.map(([id, updates]) => this.update(id, updates, true))
+            );
+
+            await this.refresh();
+
+            this._pendingChanges.clear();
+            this._originalData = JSON.parse(JSON.stringify(this.data));
+
+            this.handleInfo("All changes saved successfully.");
+        } catch (error) {
+            this.handleError(`Error saving changes: ${error}`);
+        }
     }
 
     public cancelChanges(): void {

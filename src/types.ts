@@ -36,7 +36,7 @@ export interface DataObjectOptions {
      */
     recordLimit?: number;
     /** Controls whether or not the data object can be inserted into.
-     * Will be overridden to false if no tableName defined, as cannnot insert into a view.
+     * Will be overridden to false if no tableName defined as cannnot insert into a view.
      * Default is false.
      */
     canInsert?: boolean;
@@ -56,6 +56,13 @@ export interface DataObjectOptions {
      * When defining thebinding fields, note that their values must match identically for this to work.
      */
     masterDataObjectBinding?: MasterDataObjectBinding;
+
+    /** Controls whether the data object should refresh without prompt.
+     * If false, the data object will not refresh unless explicitly called.
+     * If true, the data object will refresh on initialization, and when its master data object refreshes.
+     * Default is true.
+     */
+    autoRefresh?: boolean;
 }
 
 export interface SupabaseConfig {
@@ -96,7 +103,9 @@ export type DataObjectEvents = {
     beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord];
     afterDelete: [id: string | number];
 
-    fieldChanged: [record: DataObjectRecord, updates: Partial<DataObjectRecord>]
+    fieldChanged: [record: DataObjectRecord, updates: Partial<DataObjectRecord>];
+
+    currentRecordChanged: [previousRecord: DataObjectRecord | undefined, newRecord: DataObjectRecord | undefined]
 }
 
 export interface DataObjectCancelableEvent {

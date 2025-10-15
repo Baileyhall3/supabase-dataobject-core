@@ -63,7 +63,12 @@ export class DataObjectManager {
                 }
             }
 
-            const dataObject = new DataObject(this.config.supabaseConfig, options, this.config.errorHandler);
+            const dataObject = new DataObject(
+                this.config.supabaseConfig, 
+                options, 
+                name,
+                this.config.errorHandler,
+            );
             
             // Wait for the data object to be ready (data loaded)
             await dataObject.waitForReady();

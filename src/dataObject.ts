@@ -208,6 +208,12 @@ export class DataObject {
                         case 'lessthan':
                             query = query.lt(whereClause.field, whereClause.value);
                             break;
+                         case 'isnull':
+                            query = query.is(whereClause.field, null);
+                            break;
+                        case 'isnotnull':
+                            query = query.not(whereClause.field, 'is', null);
+                            break;
                     }
                 }
             }

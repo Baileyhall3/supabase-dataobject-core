@@ -1,6 +1,6 @@
 export type DataObjectFieldType = 'string' | 'bit' | 'Date' | 'number';
 
-export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessthan';
+export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessthan' | 'isnull' | 'isnotnull';
 
 export interface DataObjectField {
     name: string;
@@ -15,7 +15,7 @@ export interface SortConfig {
 export interface WhereClause {
     field: string;
     operator: SupportedOperator;
-    value: any;
+    value?: any;
 }
 
 export interface DataObjectOptions {

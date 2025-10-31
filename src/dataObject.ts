@@ -8,7 +8,8 @@ import {
     DataObjectEvents, 
     DataObjectCancelableEvent,
     DataObjectField,
-    MasterDataObjectBinding
+    MasterDataObjectBinding,
+    SortConfig
 } from './types';
 import { EventEmitter } from './eventEmitter';
 import { NamedEventEmitter } from './namedEventEmitter';
@@ -605,6 +606,15 @@ export class DataObject {
             canDelete: options.tableName ? (options.canDelete ?? false) : false,
             autoRefresh: options.autoRefresh ?? true
         };
+    }
+
+    /**
+     * Update the sort applied to the data. When set, will trigger a refresh.
+     * @param sort - The new sort to be applied to the data object.
+     */
+    public updateSort(sort: SortConfig) {
+        this.options.sort = sort;
+        this.refresh();
     }
 
     /**

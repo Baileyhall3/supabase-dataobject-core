@@ -94,6 +94,11 @@ export class DataObject {
         return this._options.whereClauses || [];
     }
 
+    public set whereClauses(whereClauses: WhereClause[]) {
+        this.options.whereClauses = whereClauses;
+        this.refresh();
+    }
+
     public get masterDataObject(): DataObject | undefined {
         return this.masterBinding?.masterDataObject;
     }

@@ -54,6 +54,7 @@ export class DataObject {
         groupValue: any;
         records: DataObjectRecord[];
         aggregates: Record<string, number>;
+        additionalFields: Record<string, any>;
     }[] = [];
 
     public get name(): string {
@@ -330,15 +331,17 @@ export class DataObject {
         }
     }
 
+    //** Apply groupBy to the data returned from loadData() and populate groupedData. */
     private applyGrouping(): void {
         const { groupBy } = this.options;
         if (!groupBy || !groupBy.field) {
             this._groupedData = [];
-            // this.handleWarning('No groupByConfig found for dataObject.')
             return;
         }
+        // TODO: Add handling for field not existing
 
         const groups: Record<string, DataObjectRecord[]> = {};
+
         for (const record of this.data) {
             const key = record[groupBy.field];
             if (!groups[key]) groups[key] = [];
@@ -376,7 +379,15 @@ export class DataObject {
                 }
             }
 
-            return { groupValue, records, aggregates };
+            const additional: Record<string, any> = {};
+            if (groupBy.additionalFields && groupBy.additionalFields.length > 0) {
+                const first = records[0];
+                for (const f of groupBy.additionalFields) {
+                    additional[f] = first?.[f];
+                }
+            }
+
+            return { groupValue, records, aggregates, additionalFields: additional };
         });
 
         this._groupedData = results;

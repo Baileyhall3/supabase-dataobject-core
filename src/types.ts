@@ -32,6 +32,8 @@ export interface GroupByConfig {
             field?: string;
         };
     };
+    /** Fields which will also be taken from the first record found when grouping. */
+    additionalFields?: string[];
 }
 
 export interface DataObjectOptions {
@@ -72,14 +74,13 @@ export interface DataObjectOptions {
      * When defining thebinding fields, note that their values must match identically for this to work.
      */
     masterDataObjectBinding?: MasterDataObjectBinding;
-
     /** Controls whether the data object should refresh without prompt.
      * If false, the data object will not refresh unless explicitly called.
      * If true, the data object will refresh on initialization, and when its master data object refreshes.
      * Default is true.
      */
     autoRefresh?: boolean;
-
+    /** Configuration for grouping to be applied to the data object. */
     groupBy?: GroupByConfig
 }
 

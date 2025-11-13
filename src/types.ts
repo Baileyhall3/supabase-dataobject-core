@@ -18,6 +18,22 @@ export interface WhereClause {
     value?: any;
 }
 
+export interface MasterDataObjectBinding {
+    masterDataObjectId: string;
+    childBindingField: string;
+    masterBindingField: string;
+}
+
+export interface GroupByConfig {
+    field: string;
+    aggregates?: {
+        [alias: string]: {
+            op: 'sum' | 'avg' | 'count' | 'min' | 'max';
+            field?: string;
+        };
+    };
+}
+
 export interface DataObjectOptions {
     /** The name of the view to select data from. */
     viewName: string;
@@ -63,6 +79,8 @@ export interface DataObjectOptions {
      * Default is true.
      */
     autoRefresh?: boolean;
+
+    groupBy?: GroupByConfig
 }
 
 export interface SupabaseConfig {
@@ -111,10 +129,4 @@ export type DataObjectEvents = {
 export interface DataObjectCancelableEvent {
     cancelEvent?: boolean;
     cancel?: () => void;
-}
-
-export interface MasterDataObjectBinding {
-    masterDataObjectId: string;
-    childBindingField: string;
-    masterBindingField: string;
 }

@@ -9,7 +9,8 @@ import {
     DataObjectCancelableEvent,
     DataObjectField,
     MasterDataObjectBinding,
-    SortConfig
+    SortConfig,
+    GroupByConfig
 } from './types';
 import { EventEmitter } from './eventEmitter';
 import { NamedEventEmitter } from './namedEventEmitter';
@@ -48,6 +49,12 @@ export class DataObject {
     public masterBinding: MasterBinding | undefined;
 
     private _childDataObjects: DataObject[] = [];
+
+    private _groupedData: {
+        groupValue: any;
+        records: DataObjectRecord[];
+        aggregates: Record<string, number>;
+    }[] = [];
 
     public get name(): string {
         return this._name;
@@ -110,6 +117,10 @@ export class DataObject {
 
     public get options(): DataObjectOptions {
         return this._options;
+    }
+
+    public get groupedData() {
+        return this._groupedData;
     }
 
     constructor(
@@ -272,6 +283,8 @@ export class DataObject {
             // wrap each record in a reactive Proxy
             this.data = rawData.map((record: DataObjectRecord) => this.createReactiveRecord(record));
             
+            this.applyGrouping();
+
             this.currentRecord = data.length > 0 ? this.data[0] : undefined;
             
             this.eventEmitter.fire(this.data);
@@ -315,6 +328,58 @@ export class DataObject {
         } finally {
             this.state.isRefreshing = false;
         }
+    }
+
+    private applyGrouping(): void {
+        const { groupBy } = this.options;
+        if (!groupBy || !groupBy.field) {
+            this._groupedData = [];
+            // this.handleWarning('No groupByConfig found for dataObject.')
+            return;
+        }
+
+        const groups: Record<string, DataObjectRecord[]> = {};
+        for (const record of this.data) {
+            const key = record[groupBy.field];
+            if (!groups[key]) groups[key] = [];
+            groups[key].push(record);
+        }
+
+        const results = Object.entries(groups).map(([groupValue, records]) => {
+            const aggregates: Record<string, number> = {};
+
+            if (groupBy.aggregates) {
+                for (const [alias, { op, field }] of Object.entries(groupBy.aggregates)) {
+                    const values = field ? records.map(r => Number(r[field])) : [];
+
+                    switch (op) {
+                        case 'sum':
+                            aggregates[alias] = values.reduce((a, b) => a + (b || 0), 0);
+                            break;
+                        case 'avg':
+                            aggregates[alias] = values.length
+                            ? values.reduce((a, b) => a + (b || 0), 0) / values.length
+                            : 0;
+                            break;
+                        case 'count':
+                            aggregates[alias] = records.length;
+                            break;
+                        case 'min':
+                            aggregates[alias] = Math.min(...values.filter(v => !isNaN(v)));
+                            break;
+                        case 'max':
+                            aggregates[alias] = Math.max(...values.filter(v => !isNaN(v)));
+                            break;
+                        default:
+                            this.handleWarning?.(`Unknown aggregate operation: ${op}`);
+                    }
+                }
+            }
+
+            return { groupValue, records, aggregates };
+        });
+
+        this._groupedData = results;
     }
 
     // #region CRUD
@@ -615,6 +680,12 @@ export class DataObject {
     public updateSort(sort: SortConfig) {
         this.options.sort = sort;
         this.refresh();
+    }
+
+    /** Set a new groupBy config on the dataObject to update groupedData. */
+    public setGroupBy(config: GroupByConfig) {
+        this.options.groupBy = config;
+        this.applyGrouping();
     }
 
     /**

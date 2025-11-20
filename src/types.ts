@@ -1,6 +1,6 @@
 export type DataObjectFieldType = 'string' | 'bit' | 'Date' | 'number';
 
-export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessthan' | 'isnull' | 'isnotnull';
+export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessthan' | 'isnull' | 'isnotnull' | 'like' | 'ilike';
 
 export interface DataObjectField {
     name: string;

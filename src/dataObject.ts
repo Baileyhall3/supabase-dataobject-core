@@ -232,6 +232,12 @@ export class DataObject {
                         case 'isnotnull':
                             query = query.not(whereClause.field, 'is', null);
                             break;
+                        case 'like':
+                            query = query.like(whereClause.field, `%${whereClause.value}%`);
+                            break;
+                        case 'ilike':
+                            query = query.ilike(whereClause.field, `%${whereClause.value}%`);
+                            break;
                     }
                 }
             }

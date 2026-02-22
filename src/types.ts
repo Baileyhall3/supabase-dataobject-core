@@ -81,7 +81,9 @@ export interface DataObjectOptions {
      */
     autoRefresh?: boolean;
     /** Configuration for grouping to be applied to the data object. */
-    groupBy?: GroupByConfig
+    groupBy?: GroupByConfig;
+
+    buckets?: string[]
 }
 
 export interface SupabaseConfig {

@@ -601,6 +601,33 @@ export class DataObject {
         this.handleInfo("All changes reverted.");
     }
 
+    public async uploadToBucket(
+        bucket: string,
+        filePath: string,
+        file: Blob | File,
+        options?: {
+            contentType?: string;
+            upsert?: boolean;
+        }
+    ): Promise<void> {
+
+        this.assertBucketAllowed(bucket);
+
+        const { error } = await this.supabase.storage
+            .from(bucket)
+            .upload(filePath, file, {
+                contentType: options?.contentType,
+                upsert: options?.upsert ?? true
+            });
+
+        if (error) {
+            this.errorHandler?.onError?.(error.message);
+            throw error;
+        }
+    }
+
+    // #end region
+
     // #region Helpers
 
     /**
@@ -703,6 +730,12 @@ export class DataObject {
     public setGroupBy(config: GroupByConfig) {
         this.options.groupBy = config;
         this.applyGrouping();
+    }
+
+    private assertBucketAllowed(bucket: string) {
+        if (!this._options.buckets?.includes(bucket)) {
+            this.handleError(`Bucket "${bucket}" is not registered on DataObject "${this._name}".`)
+        }
     }
 
     /**

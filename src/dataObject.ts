@@ -16,6 +16,7 @@ import { EventEmitter } from './eventEmitter';
 import { NamedEventEmitter } from './namedEventEmitter';
 import { DataObjectState } from './dataObjectState';
 import { MasterBinding } from './masterBinding';
+import { DataObjectStorage } from './dataObjectStorage';
 
 export interface DataObjectErrorHandler {
     onError?: (error: string) => void;
@@ -47,6 +48,7 @@ export class DataObject {
 
     public state: DataObjectState;
     public masterBinding: MasterBinding | undefined;
+    public storage: DataObjectStorage;
 
     private _childDataObjects: DataObject[] = [];
 
@@ -135,6 +137,12 @@ export class DataObject {
         this.errorHandler = errorHandler;
         this._name = name;
         this.state = new DataObjectState();
+        this.storage = new DataObjectStorage(
+            name,
+            this.supabase.storage,
+            options.allowedBuckets,
+            errorHandler
+        )
         this._readyPromise = this.initializeDataObject();
     }
 
@@ -402,15 +410,14 @@ export class DataObject {
     // #region CRUD
 
     /**
-     * Creates a new record in Supabase from the record informaton specified.
-     * Can only be called if a tableName is specified and canInsert is set to true.
-     * @param record - An object of fields and values for the new record.
-     * @returns true if insert is successful, false otherwise.
+     * Creates a new record in Supabase.
+     * @param record - Partial record to insert.
+     * @returns The newly created DataObjectRecord, or null if insert fails.
      */
-    public async insert(record: Partial<DataObjectRecord>): Promise<boolean> {
+    public async insert(record: Partial<DataObjectRecord>, setAsCurrent = true): Promise<DataObjectRecord | null> {
         if (!this.options.canInsert || !this.options.tableName) {
             this.handleWarning('Insert operation is not allowed for this data object');
-            return false;
+            return null;
         }
 
         const insertToken: DataObjectCancelableEvent & DataObjectOptions = {
@@ -418,8 +425,9 @@ export class DataObject {
             cancel: () => { insertToken.cancelEvent = true; },
             cancelEvent: false,
         };
+
         this.lifeCycleEvents.emit('beforeInsert', insertToken, record);
-        if (insertToken.cancelEvent) { return false; }
+        if (insertToken.cancelEvent) return null;
 
         try {
             const { data, error } = await this.supabase
@@ -427,20 +435,27 @@ export class DataObject {
                 .insert(record)
                 .select();
 
-            if (error) {
-                this.handleError(`Error inserting record: ${error.message}`);
-                return false;
+            if (error || !data?.length) {
+                this.handleError(`Error inserting record: ${error?.message ?? 'No data returned'}`);
+                return null;
             }
-            
-            // TODO: option to set newly created record as currentRecord
-            this.lifeCycleEvents.emit('afterInsert', data[0]);
+
+            const newRecord = data[0];
+
+            if (setAsCurrent) {
+                this._currentRecord = newRecord;
+            }
+
+            this.lifeCycleEvents.emit('afterInsert', newRecord);
 
             await this.refresh();
+
             this.handleInfo('Record inserted successfully');
-            return true;
-        } catch (error) {
-            this.handleError(`Error inserting record: ${error}`);
-            return false;
+
+            return newRecord;
+        } catch (err) {
+            this.handleError(`Error inserting record: ${err}`);
+            return null;
         }
     }
 
@@ -601,31 +616,6 @@ export class DataObject {
         this.handleInfo("All changes reverted.");
     }
 
-    public async uploadToBucket(
-        bucket: string,
-        filePath: string,
-        file: Blob | File,
-        options?: {
-            contentType?: string;
-            upsert?: boolean;
-        }
-    ): Promise<void> {
-
-        this.assertBucketAllowed(bucket);
-
-        const { error } = await this.supabase.storage
-            .from(bucket)
-            .upload(filePath, file, {
-                contentType: options?.contentType,
-                upsert: options?.upsert ?? true
-            });
-
-        if (error) {
-            this.errorHandler?.onError?.(error.message);
-            throw error;
-        }
-    }
-
     // #end region
 
     // #region Helpers
@@ -730,12 +720,6 @@ export class DataObject {
     public setGroupBy(config: GroupByConfig) {
         this.options.groupBy = config;
         this.applyGrouping();
-    }
-
-    private assertBucketAllowed(bucket: string) {
-        if (!this._options.buckets?.includes(bucket)) {
-            this.handleError(`Bucket "${bucket}" is not registered on DataObject "${this._name}".`)
-        }
     }
 
     /**

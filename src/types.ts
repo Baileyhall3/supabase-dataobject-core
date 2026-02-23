@@ -82,8 +82,8 @@ export interface DataObjectOptions {
     autoRefresh?: boolean;
     /** Configuration for grouping to be applied to the data object. */
     groupBy?: GroupByConfig;
-
-    buckets?: string[]
+    /** Array of bucket names which are allowed to be uploaded to. Leave empty to allow upload to all buckets. */
+    allowedBuckets?: string[]
 }
 
 export interface SupabaseConfig {

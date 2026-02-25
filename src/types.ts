@@ -1,44 +1,94 @@
 import { DataRecord } from "./dataRecord";
 
-export type DataObjectFieldType = 'string' | 'bit' | 'Date' | 'number';
+/* ============================= */
+/* Base Record Constraint        */
+/* ============================= */
 
-export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessthan' | 'isnull' | 'isnotnull' | 'like' | 'ilike';
+export interface DataRecordKey {
+    id: unknown;
+    [key: string]: unknown;
+}
+
+export type DataObjectRecord<T extends DataRecordKey> =
+    T & DataRecord<T>;
+    
+/* ============================= */
+/* Primitive Types               */
+/* ============================= */
+
+export type DataObjectFieldType =
+    | "string"
+    | "bit"
+    | "Date"
+    | "number";
+
+export type SupportedOperator =
+    | "equals"
+    | "notequals"
+    | "greaterthan"
+    | "lessthan"
+    | "isnull"
+    | "isnotnull"
+    | "like"
+    | "ilike";
+
+/* ============================= */
+/* Field / Query Config          */
+/* ============================= */
+
+export interface DataObjectField<T extends DataRecordKey> {
+    name: keyof T;
+    type?: DataObjectFieldType;
+}
+
+export interface SortConfig<T extends DataRecordKey> {
+    field: keyof T;
+    direction: "asc" | "desc";
+}
+
+export interface WhereClause<T extends DataRecordKey> {
+    field: keyof T;
+    operator: SupportedOperator;
+    value?: T[keyof T];
+}
+
+/* ============================= */
+/* Binding                       */
+/* ============================= */
+
+export interface MasterDataObjectBinding<T extends DataRecordKey> {
+    masterDataObjectId: string;
+    childBindingField: keyof T;
+    masterBindingField: string; // master object may have different T
+}
+
+/* ============================= */
+/* Grouping                      */
+/* ============================= */
+
+export interface GroupByConfig<T extends DataRecordKey> {
+    field: keyof T;
+    aggregates?: {
+        [alias: string]: {
+            op: "sum" | "avg" | "count" | "min" | "max";
+            field?: keyof T;
+        };
+    };
+    /** Fields which will also be taken from the first record found when grouping. */
+    additionalFields?: (keyof T)[];
+}
+
 
 export interface DataObjectField<T extends DataRecordKey = DataRecordKey> {
     name: keyof T;
     type?: DataObjectFieldType;
 }
 
-export interface SortConfig {
-    field: string;
-    direction: 'asc' | 'desc';
-}
+/* ============================= */
+/* DataObject Options            */
+/* ============================= */
 
-export interface WhereClause {
-    field: string;
-    operator: SupportedOperator;
-    value?: any;
-}
-
-export interface MasterDataObjectBinding {
-    masterDataObjectId: string;
-    childBindingField: string;
-    masterBindingField: string;
-}
-
-export interface GroupByConfig {
-    field: string;
-    aggregates?: {
-        [alias: string]: {
-            op: 'sum' | 'avg' | 'count' | 'min' | 'max';
-            field?: string;
-        };
-    };
-    /** Fields which will also be taken from the first record found when grouping. */
-    additionalFields?: string[];
-}
-
-export interface DataObjectOptions {
+export interface DataObjectOptions<T extends DataRecordKey> {
     /** The name of the view to select data from. */
     viewName: string;
     /** The table for which to perform CRUD operations on. */
@@ -46,11 +96,11 @@ export interface DataObjectOptions {
     /** An array of fields from the view to get values from. Data will be returned for the specified fields only.
      * Leave blank to include all fields.
      */
-    fields?: DataObjectField[];
+    fields?: DataObjectField<T>[];
     /** Array of where clauses to be applied when retrieving data from the view. */
-    whereClauses?: WhereClause[];
+    whereClauses?: WhereClause<T>[];
     /** Sorting to be applied to the returned data based on specified field and direction. */
-    sort?: SortConfig;
+    sort?: SortConfig<T>;
     /** When specified, will only return the first x amount of records.
      * Leave blank to return all records.
      */
@@ -75,7 +125,7 @@ export interface DataObjectOptions {
      * The master data object must be defined and initialized first, before adding a child data object.
      * When defining thebinding fields, note that their values must match identically for this to work.
      */
-    masterDataObjectBinding?: MasterDataObjectBinding;
+    masterDataObjectBinding?: MasterDataObjectBinding<T>;
     /** Controls whether the data object should refresh without prompt.
      * If false, the data object will not refresh unless explicitly called.
      * If true, the data object will refresh on initialization, and when its master data object refreshes.
@@ -83,7 +133,7 @@ export interface DataObjectOptions {
      */
     autoRefresh?: boolean;
     /** Configuration for grouping to be applied to the data object. */
-    groupBy?: GroupByConfig;
+    groupBy?: GroupByConfig<T>;
     /** Array of bucket names which are allowed to be uploaded to. Leave empty to allow upload to all buckets. */
     allowedBuckets?: string[]
 }
@@ -94,38 +144,41 @@ export interface SupabaseConfig {
     projectName?: string;
 }
 
-export interface DataRecordKey {
-    id: unknown;
-    [key: string]: unknown;
-}
-export type DataObjectRecord<T extends DataRecordKey = DataRecordKey> = T & DataRecord<T>; 
+/* ============================= */
+/* Named / Stored Config         */
+/* ============================= */
 
-export interface NamedDataObjectOptions extends DataObjectOptions {
-    name: string; // This will be the ID for accessing the data object
+export interface NamedDataObjectOptions<T extends DataRecordKey>
+    extends DataObjectOptions<T> {
+    name: string;
 }
 
-export interface StoredDataObject {
+export interface StoredDataObject<T extends DataRecordKey> {
     id: string;
     name: string;
-    options: DataObjectOptions;
-    dataObject: any; // Will be properly typed when DataObject is imported
+    options: DataObjectOptions<T>;
+    dataObject: any; // You can tighten this later to DataObject<T>
     createdAt: Date;
 }
 
+/* ============================= */
+/* Events                        */
+/* ============================= */
+
 export type DataObjectEvents<T extends DataRecordKey> = {
-    beforeLoad: [options: DataObjectCancelableEvent & DataObjectOptions];
+    beforeLoad: [options: DataObjectCancelableEvent & DataObjectOptions<T>];
     afterLoad: [data: DataObjectRecord<T>[]];
 
-    beforeRefresh: [options: DataObjectCancelableEvent & DataObjectOptions];
+    beforeRefresh: [options: DataObjectCancelableEvent & DataObjectOptions<T>];
     afterRefresh: [data: DataObjectRecord<T>[]];
 
-    beforeInsert: [options: DataObjectCancelableEvent & DataObjectOptions, record: Partial<T>];
+    beforeInsert: [options: DataObjectCancelableEvent & DataObjectOptions<T>, record: Partial<T>];
     afterInsert: [record: DataObjectRecord<T>];
 
-    beforeUpdate: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord<T>, updates: Partial<T>];
+    beforeUpdate: [options: DataObjectCancelableEvent & DataObjectOptions<T>, record: DataObjectRecord<T>, updates: Partial<T>];
     afterUpdate: [record: DataObjectRecord<T>, updates: Partial<T>];
 
-    beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord<T>];
+    beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions<T>, record: DataObjectRecord<T>];
     afterDelete: [id: T["id"]];
 
     fieldChanged: [record: DataObjectRecord<T>, updates: Partial<T>];

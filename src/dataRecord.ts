@@ -3,7 +3,7 @@ import { DataObjectField } from "./types";
 
 export class DataRecord<T extends { id: unknown }> {
     public readonly index: number;
-    public readonly fields: DataObjectField[];
+    public readonly fields: DataObjectField<T>[];
 
     private _dataObject: DataObject<T>;
     private _state = new DataRecordState();
@@ -32,7 +32,7 @@ export class DataRecord<T extends { id: unknown }> {
 
     constructor(
         index: number,
-        fields: DataObjectField[],
+        fields: DataObjectField<T>[],
         rawRecord: T,
         dataObject: DataObject<T>,
         onFieldChanged?: (record: DataRecord<T>, field: keyof T) => void

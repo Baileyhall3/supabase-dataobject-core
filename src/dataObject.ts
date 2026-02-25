@@ -30,7 +30,7 @@ export class DataObject<
   T extends DataRecordKey = DataRecordKey
 > {
     private supabase: SupabaseClient;
-    private _options: DataObjectOptions;
+    private _options: DataObjectOptions<T>;
     private errorHandler?: DataObjectErrorHandler;
     private _name: string;
     private _readyPromise: Promise<void>;
@@ -46,7 +46,7 @@ export class DataObject<
     public readonly once = this.lifeCycleEvents.once.bind(this.lifeCycleEvents);
 
     private _currentRecord: DataObjectRecord<T> | undefined;
-    private _fields: DataObjectField[] = [];
+    private _fields: DataObjectField<T>[] = [];
 
     public state: DataObjectState;
     public masterBinding: MasterBinding | undefined;
@@ -91,7 +91,7 @@ export class DataObject<
         }
     }
 
-    public get fields(): DataObjectField[] {
+    public get fields(): DataObjectField<T>[] {
         return this._fields;
     }
 
@@ -107,11 +107,11 @@ export class DataObject<
         return this.data.some(r => r.hasChanges);
     }
 
-    public get whereClauses(): WhereClause[] {
+    public get whereClauses(): WhereClause<T>[] {
         return this._options.whereClauses || [];
     }
 
-    public set whereClauses(whereClauses: WhereClause[]) {
+    public set whereClauses(whereClauses: WhereClause<T>[]) {
         this.options.whereClauses = whereClauses;
         this.refresh();
     }
@@ -124,7 +124,7 @@ export class DataObject<
         return this._childDataObjects;
     }
 
-    public get options(): DataObjectOptions {
+    public get options(): DataObjectOptions<T> {
         return this._options;
     }
 
@@ -134,7 +134,7 @@ export class DataObject<
 
     constructor(
         supabaseConfig: SupabaseConfig, 
-        options: DataObjectOptions, 
+        options: DataObjectOptions<T>, 
         name: string,
         errorHandler?: DataObjectErrorHandler
     ) {
@@ -202,7 +202,7 @@ export class DataObject<
      * Loads data from Supabase with the given parameters defined when creating data object.
      */
     private async loadData(): Promise<void> {
-        const cancelToken: DataObjectCancelableEvent & DataObjectOptions = {
+        const cancelToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
             ...this.options,
             cancel: () => { cancelToken.cancelEvent = true; },
             cancelEvent: false,
@@ -325,7 +325,7 @@ export class DataObject<
         if (this.state.isRefreshing) { return; }
         this.state.isRefreshing = true;
         try {
-            const refreshToken: DataObjectCancelableEvent & DataObjectOptions = {
+            const refreshToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
                 ...this.options,
                 cancel: () => { refreshToken.cancelEvent = true; },
                 cancelEvent: false,
@@ -354,7 +354,8 @@ export class DataObject<
         const groups: Record<string, DataObjectRecord<T>[]> = {};
 
         for (const record of this.data) {
-            const key = record[groupBy.field];
+            const rawKey = record[groupBy.field];
+            const key = String(rawKey);
             if (!groups[key]) groups[key] = [];
             groups[key].push(record);
         }
@@ -364,7 +365,9 @@ export class DataObject<
 
             if (groupBy.aggregates) {
                 for (const [alias, { op, field }] of Object.entries(groupBy.aggregates)) {
-                    const values = field ? records.map(r => Number(r[field])) : [];
+                    const values = field
+                        ? records.map(r => Number(r[field] as unknown))
+                        : [];
 
                     switch (op) {
                         case 'sum':
@@ -390,7 +393,7 @@ export class DataObject<
                 }
             }
 
-            const additional: Record<string, any> = {};
+            const additional: Partial<T> = {};
             if (groupBy.additionalFields && groupBy.additionalFields.length > 0) {
                 const first = records[0];
                 for (const f of groupBy.additionalFields) {
@@ -417,7 +420,7 @@ export class DataObject<
             return null;
         }
 
-        const insertToken: DataObjectCancelableEvent & DataObjectOptions = {
+        const insertToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
             ...this.options,
             cancel: () => { insertToken.cancelEvent = true; },
             cancelEvent: false,
@@ -477,7 +480,7 @@ export class DataObject<
         const record = this.data.find(x => x.id === id);
         if (!record) { return false; }
 
-        const updateToken: DataObjectCancelableEvent & DataObjectOptions = {
+        const updateToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
             ...this.options,
             cancel: () => { updateToken.cancelEvent = true; },
             cancelEvent: false,
@@ -532,7 +535,7 @@ export class DataObject<
         const record = this.data.find(x => x.id === id);
         if (!record) { return false; }
 
-        const deleteToken: DataObjectCancelableEvent & DataObjectOptions = {
+        const deleteToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
             ...this.options,
             cancel: () => { deleteToken.cancelEvent = true; },
             cancelEvent: false,
@@ -639,7 +642,7 @@ export class DataObject<
     /**
      * Gets the options defined for the created data object.
      */
-    public getOptions(): DataObjectOptions {
+    public getOptions(): DataObjectOptions<T> {
         return { ...this.options };
     }
 
@@ -681,7 +684,7 @@ export class DataObject<
      * @param options - The DataObjectOptions for which to perform the operation on
      * @returns DataObjectOptions with potential changes based on other option values
      */
-    private setDefaultOptions(options: DataObjectOptions): DataObjectOptions {
+    private setDefaultOptions(options: DataObjectOptions<T>): DataObjectOptions<T> {
         return {
             ...options,
             whereClauses: options.whereClauses ? options.whereClauses : [],
@@ -697,13 +700,13 @@ export class DataObject<
      * Update the sort applied to the data. When set, will trigger a refresh.
      * @param sort - The new sort to be applied to the data object.
      */
-    public updateSort(sort: SortConfig) {
+    public updateSort(sort: SortConfig<T>) {
         this.options.sort = sort;
         this.refresh();
     }
 
     /** Set a new groupBy config on the dataObject to update groupedData. */
-    public setGroupBy(config: GroupByConfig) {
+    public setGroupBy(config: GroupByConfig<T>) {
         this.options.groupBy = config;
         this.applyGrouping();
     }
@@ -759,7 +762,7 @@ export async function createDataObject<
   T extends DataRecordKey = DataRecordKey
 >(
     supabaseConfig: SupabaseConfig,
-    options: DataObjectOptions,
+    options: DataObjectOptions<T>,
     name: string,
     errorHandler?: DataObjectErrorHandler
 ): Promise<DataObject<T>> {

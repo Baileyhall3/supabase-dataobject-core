@@ -43,7 +43,7 @@ export class DataRecord<T extends { id: unknown }> {
         this._onFieldChanged = onFieldChanged;
         this._dataObject = dataObject;
 
-        this._original = structuredClone(rawRecord);
+        this._original = JSON.parse(JSON.stringify(rawRecord)); 
 
         const handler: ProxyHandler<this> = {
             get: (target, prop, receiver) => {
@@ -97,8 +97,6 @@ export class DataRecord<T extends { id: unknown }> {
 
         try {
             await this._dataObject.update(this.id, this._pendingChanges, true);
-            // this._original = structuredClone(this._record);
-            // this.clearChanges();
         } finally {
             this._state.isSaving = false;
         }
@@ -118,7 +116,7 @@ export class DataRecord<T extends { id: unknown }> {
 
     /** Cancels all current changes and reverts the record back to its original state. */
     public revert(): void {
-        const original = structuredClone(this._original);
+        const original = JSON.parse(JSON.stringify(this._original)); 
 
         for (const key of Object.keys(original) as (keyof T)[]) {
             if (this._record[key] !== original[key]) {
@@ -143,7 +141,7 @@ export class DataRecord<T extends { id: unknown }> {
             this._record[key] = updates[key] as T[keyof T];
         }
 
-        this._original = structuredClone(this._record);
+        this._original = JSON.parse(JSON.stringify(this._record));
         this.clearChanges();
     }
 }

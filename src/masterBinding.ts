@@ -2,8 +2,8 @@ import { DataObject, DataObjectErrorHandler } from "./dataObject";
 import type { MasterDataObjectBinding, WhereClause } from "./types";
 
 export class MasterBinding {
-    private _masterDataObject!: DataObject;
-    private _childDataObject: DataObject;
+    private _masterDataObject!: DataObject<any>;
+    private _childDataObject: DataObject<any>;
     private _bindingDef: MasterDataObjectBinding;
     private _masterDataChangeListener!: (() => void);
     private _bindingWhereClause: WhereClause | undefined = undefined;
@@ -17,12 +17,12 @@ export class MasterBinding {
         return this._bindingWhereClause;
     }
 
-    public get masterDataObject(): DataObject {
+    public get masterDataObject(): DataObject<any> {
         return this._masterDataObject;
     }
 
     constructor(
-        child: DataObject,
+        child: DataObject<any>,
         bindingDef: MasterDataObjectBinding,
         errorHandler?: DataObjectErrorHandler
     ) {

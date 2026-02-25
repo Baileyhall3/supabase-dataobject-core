@@ -10,13 +10,15 @@ import {
     DataObjectField,
     MasterDataObjectBinding,
     SortConfig,
-    GroupByConfig
+    GroupByConfig,
+    DataRecordKey
 } from './types';
 import { EventEmitter } from './eventEmitter';
 import { NamedEventEmitter } from './namedEventEmitter';
 import { DataObjectState } from './dataObjectState';
 import { MasterBinding } from './masterBinding';
 import { DataObjectStorage } from './dataObjectStorage';
+import { DataRecord } from './dataRecord';
 
 export interface DataObjectErrorHandler {
     onError?: (error: string) => void;
@@ -24,37 +26,37 @@ export interface DataObjectErrorHandler {
     onInfo?: (info: string) => void;
 }
 
-export class DataObject {
+export class DataObject<
+  T extends DataRecordKey = DataRecordKey
+> {
     private supabase: SupabaseClient;
     private _options: DataObjectOptions;
     private errorHandler?: DataObjectErrorHandler;
     private _name: string;
     private _readyPromise: Promise<void>;
     
-    public data: DataObjectRecord[] = [];
-    private _originalData: DataObjectRecord[] = [];
-    private _pendingChanges: Map<any, Partial<DataObjectRecord>> = new Map();
-    
-    private eventEmitter = new EventEmitter<DataObjectRecord[]>();
+    public data: DataObjectRecord<T>[] = [];
+
+    private eventEmitter = new EventEmitter<DataObjectRecord<T>[]>();
     public readonly onDataChanged = this.eventEmitter.event;
 
-    private lifeCycleEvents = new NamedEventEmitter<DataObjectEvents>();
+    private lifeCycleEvents = new NamedEventEmitter<DataObjectEvents<T>>();
     public readonly on = this.lifeCycleEvents.on.bind(this.lifeCycleEvents);
     public readonly off = this.lifeCycleEvents.off.bind(this.lifeCycleEvents);
     public readonly once = this.lifeCycleEvents.once.bind(this.lifeCycleEvents);
 
-    private _currentRecord: DataObjectRecord | undefined;
+    private _currentRecord: DataObjectRecord<T> | undefined;
     private _fields: DataObjectField[] = [];
 
     public state: DataObjectState;
     public masterBinding: MasterBinding | undefined;
     public storage: DataObjectStorage;
 
-    private _childDataObjects: DataObject[] = [];
+    private _childDataObjects: DataObject<any>[] = [];
 
     private _groupedData: {
         groupValue: any;
-        records: DataObjectRecord[];
+        records: DataObjectRecord<T>[];
         aggregates: Record<string, number>;
         additionalFields: Record<string, any>;
     }[] = [];
@@ -67,11 +69,11 @@ export class DataObject {
         return this.data.length;
     }
 
-    public get currentRecord(): DataObjectRecord | undefined {
+    public get currentRecord(): DataObjectRecord<T> | undefined {
         return this._currentRecord;
     }
 
-    public set currentRecord(record: DataObjectRecord | undefined) {
+    public set currentRecord(record: DataObjectRecord<T> | undefined) {
         if (this._currentRecord?.id === record?.id) return;
 
         const previousRecord = this._currentRecord;
@@ -97,8 +99,12 @@ export class DataObject {
         return this.state.isReady;
     }
 
+    public get changedRecords(): DataObjectRecord<T>[] {
+        return this.data.filter(r => r.hasChanges);
+    }
+
     public get hasChanges(): boolean {
-        return this._pendingChanges.size > 0;
+        return this.data.some(r => r.hasChanges);
     }
 
     public get whereClauses(): WhereClause[] {
@@ -255,8 +261,6 @@ export class DataObject {
                 const bindingWhereClause = this.masterBinding.bindingWhereClause;
                 if (!bindingWhereClause || bindingWhereClause.value === undefined || bindingWhereClause.value === null) {
                     this.data = [];
-                    this._originalData = [];
-                    this._pendingChanges.clear();
                     this.currentRecord = undefined;
                     this.state.isReady = true;
                     this.lifeCycleEvents.emit('afterLoad', this.data);
@@ -289,14 +293,8 @@ export class DataObject {
             // assign raw data first
             const rawData = data || [];
 
-            // create a deep clone of data
-            this._originalData = JSON.parse(JSON.stringify(rawData));
-
-            // clear any previous change tracking
-            this._pendingChanges.clear();
-
             // wrap each record in a reactive Proxy
-            this.data = rawData.map((record: DataObjectRecord) => this.createReactiveRecord(record));
+            this.data = rawData.map((record: T) => this.createReactiveRecord(record));
             
             this.applyGrouping();
 
@@ -316,7 +314,7 @@ export class DataObject {
      * Fetches data created in loadData() method.
      * @returns an array of DataObjectRecords
      */
-    public getData(): DataObjectRecord[] {
+    public getData(): DataObjectRecord<T>[] {
         return [...this.data];
     }
     
@@ -353,8 +351,7 @@ export class DataObject {
             return;
         }
         // TODO: Add handling for field not existing
-
-        const groups: Record<string, DataObjectRecord[]> = {};
+        const groups: Record<string, DataObjectRecord<T>[]> = {};
 
         for (const record of this.data) {
             const key = record[groupBy.field];
@@ -414,7 +411,7 @@ export class DataObject {
      * @param record - Partial record to insert.
      * @returns The newly created DataObjectRecord, or null if insert fails.
      */
-    public async insert(record: Partial<DataObjectRecord>, setAsCurrent = true): Promise<DataObjectRecord | null> {
+    public async insert(record: Partial<T>, setAsCurrent = true): Promise<DataObjectRecord<T> | null> {
         if (!this.options.canInsert || !this.options.tableName) {
             this.handleWarning('Insert operation is not allowed for this data object');
             return null;
@@ -468,8 +465,8 @@ export class DataObject {
      * @returns true if update was successful, false otherwise.
      */
     public async update(
-        id: any, 
-        updates: Partial<DataObjectRecord>, 
+        id: T["id"], 
+        updates: Partial<T>, 
         skipRefresh: boolean = false
     ): Promise<boolean> {
         if (!this.options.canUpdate || !this.options.tableName) {
@@ -499,8 +496,10 @@ export class DataObject {
                 this.handleError(`Error updating record: ${error.message}`);
                 return false;
             }
-            
-            if (!skipRefresh) {
+
+            if (skipRefresh) {
+                record.applyServerUpdates(updates);
+            } else {
                 await this.refresh();
             }
 
@@ -524,7 +523,7 @@ export class DataObject {
      * @param id - The id of the record to delete
      * @returns true if delete was successful, false otherwise.
      */
-    public async delete(id: any): Promise<boolean> {
+    public async delete(id: T["id"]): Promise<boolean> {
         if (!this.options.canDelete || !this.options.tableName) {
             this.handleWarning('Delete operation is not allowed for this data object');
             return false;
@@ -569,7 +568,7 @@ export class DataObject {
      * Can only be done if a tableName is specified and canUpdate is true.
      */
     public async saveChanges(): Promise<void> {
-        if (this._pendingChanges.size === 0) {
+        if (this.changedRecords.length == 0) {
             this.handleInfo("No changes to save.");
             return;
         }
@@ -579,18 +578,13 @@ export class DataObject {
             return;
         }
 
-        const pendingEntries = Array.from(this._pendingChanges.entries());
+        const changed = this.changedRecords;
 
         try {
             this.state.isSaving = true;
-            await Promise.all(
-                pendingEntries.map(([id, updates]) => this.update(id, updates, true))
-            );
+            await Promise.all(changed.map(r => r.save()));
 
             await this.refresh();
-
-            this._pendingChanges.clear();
-            this._originalData = JSON.parse(JSON.stringify(this.data));
 
             this.handleInfo("All changes saved successfully.");
         } catch (error) {
@@ -604,14 +598,15 @@ export class DataObject {
      * Clears all pending changes and returns the data object to its original state.
      */
     public cancelChanges(): void {
-        if (this._pendingChanges.size === 0) {
+        if (this.changedRecords.length === 0) {
             this.handleInfo("No changes to revert.");
             return;
         }
-        this.data = JSON.parse(JSON.stringify(this._originalData))
-            .map((record: DataObjectRecord) => this.createReactiveRecord(record));
-
-        this._pendingChanges.clear();
+        for (const record of this.data) {
+            if (record.hasChanges) {
+                record.revert();
+            }
+        }
         this.eventEmitter.fire(this.data);
         this.handleInfo("All changes reverted.");
     }
@@ -625,29 +620,20 @@ export class DataObject {
      * @param record - DataObjectRecord to create proxy for
      * @returns Proxy of DataObjectRecord passed through
      */
-    private createReactiveRecord(record: DataObjectRecord): DataObjectRecord {
-        const handler: ProxyHandler<DataObjectRecord> = {
-            set: (target, prop, value) => {
-                const key = prop as keyof DataObjectRecord;
-
-                // Only track if value actually changed
-                if (target[key] !== value) {
-                    target[key] = value;
-                    if (!this._pendingChanges.has(target.id)) {
-                        this._pendingChanges.set(target.id, {});
-                    }
-                    const pending = this._pendingChanges.get(target.id)!;
-                    pending[key] = value;
-                    
-                    this.lifeCycleEvents.emit('fieldChanged', record, pending);
-                    this.currentRecord = record;
-                    this.eventEmitter.fire(this.data);
-                }
-                return true;
+    private createReactiveRecord(raw: T): DataObjectRecord<T> {
+        const record = new DataRecord<T>(
+            this.data.length,
+            this._fields,
+            raw,
+            this,
+            (rec, field) => {
+                this.lifeCycleEvents.emit('fieldChanged', record, rec.changes);
+                this.currentRecord = record;
+                this.eventEmitter.fire(this.data);
             }
-        };
+        ) as DataObjectRecord<T>;
 
-        return new Proxy(record, handler);
+        return record;
     }
 
     /**
@@ -661,7 +647,7 @@ export class DataObject {
      * Adds a new data object to this data object's childDataObjects array.
      * @param child - The data object to add as a child to this one.
      */
-    public registerChildDataObject(child: DataObject): void {
+    public registerChildDataObject(child: DataObject<any>): void {
         if (!this._childDataObjects.includes(child)) {
             this._childDataObjects.push(child);
         }
@@ -671,7 +657,7 @@ export class DataObject {
      * Removes a data object from this data object's childDataObjects array.
      * @param child - The data object to remove.
      */
-    public unregisterChildDataObject(child: DataObject): void {
+    public unregisterChildDataObject(child: DataObject<any>): void {
         this._childDataObjects = this._childDataObjects.filter(c => c !== child);
     }
 
@@ -723,6 +709,15 @@ export class DataObject {
     }
 
     /**
+     * Gets a record from DataObject's data array.
+     * @param id - The id of the record to fetch.
+     * @returns A DataObjectRecord if found, undefined if not.
+     */
+    public getRecordById(id: T["id"]): DataObjectRecord<T> | undefined {
+        return this.data.find(x => x.id === id);
+    }
+
+    /**
      * Helper method to dispose of a data object in order to prevent memory leaks.
      * Disposes of all child data objects and resets state to default.
      */
@@ -747,8 +742,6 @@ export class DataObject {
         this.lifeCycleEvents.clearAll();
 
         this.data = [];
-        this._originalData = [];
-        this._pendingChanges.clear();
         this._currentRecord = undefined;
 
         this.state.reset();
@@ -762,11 +755,13 @@ export class DataObject {
     }
 }
 
-export async function createDataObject(
-    supabaseConfig: SupabaseConfig, 
-    options: DataObjectOptions, 
+export async function createDataObject<
+  T extends DataRecordKey = DataRecordKey
+>(
+    supabaseConfig: SupabaseConfig,
+    options: DataObjectOptions,
     name: string,
     errorHandler?: DataObjectErrorHandler
-): Promise<DataObject> {
-    return new DataObject(supabaseConfig, options, name, errorHandler);
+): Promise<DataObject<T>> {
+    return new DataObject<T>(supabaseConfig, options, name, errorHandler);
 }

@@ -1,9 +1,11 @@
+import { DataRecord } from "./dataRecord";
+
 export type DataObjectFieldType = 'string' | 'bit' | 'Date' | 'number';
 
 export type SupportedOperator = 'equals' | 'notequals' | 'greaterthan' | 'lessthan' | 'isnull' | 'isnotnull' | 'like' | 'ilike';
 
-export interface DataObjectField {
-    name: string;
+export interface DataObjectField<T extends DataRecordKey = DataRecordKey> {
+    name: keyof T;
     type?: DataObjectFieldType;
 }
 
@@ -92,9 +94,11 @@ export interface SupabaseConfig {
     projectName?: string;
 }
 
-export interface DataObjectRecord {
-    [key: string]: any;
+export interface DataRecordKey {
+    id: unknown;
+    [key: string]: unknown;
 }
+export type DataObjectRecord<T extends DataRecordKey = DataRecordKey> = T & DataRecord<T>; 
 
 export interface NamedDataObjectOptions extends DataObjectOptions {
     name: string; // This will be the ID for accessing the data object
@@ -108,25 +112,25 @@ export interface StoredDataObject {
     createdAt: Date;
 }
 
-export type DataObjectEvents = {
+export type DataObjectEvents<T extends DataRecordKey> = {
     beforeLoad: [options: DataObjectCancelableEvent & DataObjectOptions];
-    afterLoad: [data: DataObjectRecord[]];
+    afterLoad: [data: DataObjectRecord<T>[]];
 
     beforeRefresh: [options: DataObjectCancelableEvent & DataObjectOptions];
-    afterRefresh: [data: DataObjectRecord[]];
+    afterRefresh: [data: DataObjectRecord<T>[]];
 
-    beforeInsert: [options: DataObjectCancelableEvent & DataObjectOptions, record: Partial<DataObjectRecord>];
-    afterInsert: [record: DataObjectRecord];
+    beforeInsert: [options: DataObjectCancelableEvent & DataObjectOptions, record: Partial<T>];
+    afterInsert: [record: DataObjectRecord<T>];
 
-    beforeUpdate: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord, updates: Partial<DataObjectRecord>];
-    afterUpdate: [record: DataObjectRecord, updates: Partial<DataObjectRecord>];
+    beforeUpdate: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord<T>, updates: Partial<T>];
+    afterUpdate: [record: DataObjectRecord<T>, updates: Partial<T>];
 
-    beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord];
-    afterDelete: [id: string | number];
+    beforeDelete: [options: DataObjectCancelableEvent & DataObjectOptions, record: DataObjectRecord<T>];
+    afterDelete: [id: T["id"]];
 
-    fieldChanged: [record: DataObjectRecord, updates: Partial<DataObjectRecord>];
+    fieldChanged: [record: DataObjectRecord<T>, updates: Partial<T>];
 
-    currentRecordChanged: [previousRecord: DataObjectRecord | undefined, newRecord: DataObjectRecord | undefined]
+    currentRecordChanged: [previousRecord: DataObjectRecord<T> | undefined, newRecord: DataObjectRecord<T> | undefined]
 }
 
 export interface DataObjectCancelableEvent {

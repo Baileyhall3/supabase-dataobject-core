@@ -96,4 +96,24 @@ export class DataObjectStorage {
         await this.uploadToBucket(bucket, filePath, file, options);
         return this.getPublicUrl(bucket, filePath);
     }
+
+    public async createSignedUrl(
+        bucket: string,
+        filePath: string,
+        expiresIn: number = 60 * 60
+    ): Promise<string | null> {
+
+        if (!this.assertBucketAllowed(bucket)) return null;
+
+        const { data, error } = await this._supabaseStorage
+            .from(bucket)
+            .createSignedUrl(filePath, expiresIn);
+
+        if (error) {
+            this._errorHandler?.onError?.(error.message);
+            return null;
+        }
+
+        return data?.signedUrl ?? null;
+    }
 }

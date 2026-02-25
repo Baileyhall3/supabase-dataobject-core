@@ -1,5 +1,5 @@
 import { DataObject, DataObjectErrorHandler } from './dataObject';
-import { DataObjectOptions, SupabaseConfig, StoredDataObject } from './types';
+import type { DataObjectOptions, SupabaseConfig, StoredDataObject, DataRecordKey } from './types';
 import { EventEmitter } from './eventEmitter';
 
 export interface DataObjectManagerConfig {
@@ -9,9 +9,9 @@ export interface DataObjectManagerConfig {
 
 export class DataObjectManager {
     private static instance: DataObjectManager;
-    private dataObjects: Map<string, StoredDataObject> = new Map();
+    private dataObjects: Map<string, StoredDataObject<any>> = new Map();
     private config: DataObjectManagerConfig;
-    private eventEmitter = new EventEmitter<StoredDataObject[]>();
+    private eventEmitter = new EventEmitter<StoredDataObject<any>[]>();
     
     public readonly onDataObjectsChanged = this.eventEmitter.event;
 
@@ -35,7 +35,10 @@ export class DataObjectManager {
         }
     }
 
-    public async createDataObject(name: string, options: DataObjectOptions): Promise<DataObject | null> {
+    public async createDataObject<T extends DataRecordKey>(
+        name: string,
+        options: DataObjectOptions<T>
+    ): Promise<DataObject<T> | null> {
         // Check if name already exists
         if (this.dataObjects.has(name)) {
             const errorMsg = `Data object with name '${name}' already exists. Please choose a different name.`;
@@ -63,7 +66,7 @@ export class DataObjectManager {
                 }
             }
 
-            const dataObject = new DataObject(
+            const dataObject = new DataObject<T>(
                 this.config.supabaseConfig, 
                 options, 
                 name,
@@ -73,7 +76,7 @@ export class DataObjectManager {
             // Wait for the data object to be ready (data loaded)
             await dataObject.waitForReady();
             
-            const storedDataObject: StoredDataObject = {
+            const storedDataObject: StoredDataObject<T> = {
                 id: name,
                 name,
                 options,
@@ -103,12 +106,13 @@ export class DataObjectManager {
         }
     }
 
-    public getDataObjectById(id: string): DataObject | null {
-        const storedDataObject = this.dataObjects.get(id);
-        return storedDataObject ? storedDataObject.dataObject : null;
+    public getDataObjectById<T extends DataRecordKey>(
+        id: string
+    ): DataObject<T> | null {
+        return this.dataObjects.get(id)?.dataObject as DataObject<T> | null;
     }
 
-    public getAllDataObjects(): StoredDataObject[] {
+    public getAllDataObjects(): StoredDataObject<DataRecordKey>[] {
         return Array.from(this.dataObjects.values());
     }
 
@@ -172,27 +176,32 @@ export class DataObjectManager {
 }
 
 // Global functions that can be used anywhere
-export function getDataObjectById(id: string): DataObject | null {
+export function getDataObjectById<T extends DataRecordKey>(
+    id: string
+): DataObject<T> | null {
     try {
         const manager = DataObjectManager.getInstance();
-        return manager.getDataObjectById(id);
+        return manager.getDataObjectById<T>(id);
     } catch (error) {
         console.error('DataObjectManager not initialized:', error);
         return null;
     }
 }
 
-export async function createDataObject(name: string, options: DataObjectOptions): Promise<DataObject | null> {
+export async function createDataObject<T extends DataRecordKey>(
+    name: string,
+    options: DataObjectOptions<T>
+): Promise<DataObject<T> | null> {
     try {
         const manager = DataObjectManager.getInstance();
-        return await manager.createDataObject(name, options);
+        return await manager.createDataObject<T>(name, options);
     } catch (error) {
         console.error('DataObjectManager not initialized:', error);
         return null;
     }
 }
 
-export function getAllDataObjects(): StoredDataObject[] {
+export function getAllDataObjects(): StoredDataObject<DataRecordKey>[] {
     try {
         const manager = DataObjectManager.getInstance();
         return manager.getAllDataObjects();

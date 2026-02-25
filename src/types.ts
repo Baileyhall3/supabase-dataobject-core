@@ -56,10 +56,12 @@ export interface WhereClause<T extends DataRecordKey> {
 /* Binding                       */
 /* ============================= */
 
-export interface MasterDataObjectBinding<T extends DataRecordKey> {
+export interface MasterDataObjectBinding<
+    TChild extends DataRecordKey
+> {
     masterDataObjectId: string;
-    childBindingField: keyof T;
-    masterBindingField: string; // master object may have different T
+    masterBindingField: string;
+    childBindingField: keyof TChild;
 }
 
 /* ============================= */
@@ -123,7 +125,7 @@ export interface DataObjectOptions<T extends DataRecordKey> {
     /** The binding to this data object's master data object. 
      * Use this when the currentRecord of one data object directly informs the returned data of the other.
      * The master data object must be defined and initialized first, before adding a child data object.
-     * When defining thebinding fields, note that their values must match identically for this to work.
+     * When defining the binding fields, note that their values must match identically for this to work.
      */
     masterDataObjectBinding?: MasterDataObjectBinding<T>;
     /** Controls whether the data object should refresh without prompt.

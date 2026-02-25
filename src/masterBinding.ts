@@ -1,29 +1,32 @@
 import { DataObject, DataObjectErrorHandler } from "./dataObject";
-import type { MasterDataObjectBinding, WhereClause } from "./types";
+import type { MasterDataObjectBinding, WhereClause, DataRecordKey } from "./types";
 
-export class MasterBinding {
-    private _masterDataObject!: DataObject<any>;
-    private _childDataObject: DataObject<any>;
-    private _bindingDef: MasterDataObjectBinding;
+export class MasterBinding<
+    TMaster extends DataRecordKey,
+    TChild extends DataRecordKey
+> {
+    private _masterDataObject!: DataObject<TMaster>;
+    private _childDataObject: DataObject<TChild>;
+    private _bindingDef: MasterDataObjectBinding<TChild>;
     private _masterDataChangeListener!: (() => void);
-    private _bindingWhereClause: WhereClause | undefined = undefined;
+    private _bindingWhereClause?: WhereClause<TChild>;
     private _errorHandler?: DataObjectErrorHandler;
 
-    public get bindingDefinition(): MasterDataObjectBinding {
+    public get bindingDefinition(): MasterDataObjectBinding<TChild> {
         return this._bindingDef;
     }
 
-    public get bindingWhereClause(): WhereClause | undefined {
+    public get bindingWhereClause(): WhereClause<TChild> | undefined {
         return this._bindingWhereClause;
     }
 
-    public get masterDataObject(): DataObject<any> {
+    public get masterDataObject(): DataObject<TMaster> {
         return this._masterDataObject;
     }
 
     constructor(
-        child: DataObject<any>,
-        bindingDef: MasterDataObjectBinding,
+        child: DataObject<TChild>,
+        bindingDef: MasterDataObjectBinding<TChild>,
         errorHandler?: DataObjectErrorHandler
     ) {
         this._childDataObject = child;
@@ -33,7 +36,9 @@ export class MasterBinding {
 
     async initialize() {
         try {
-            const masterDataObject = await this.getMasterDataObjectFromManager(this._bindingDef.masterDataObjectId);
+            const masterDataObject = await this.getMasterDataObjectFromManager(
+                this._bindingDef.masterDataObjectId
+            ) as DataObject<TMaster> | null;
             
             if (!masterDataObject) {
                 if (this._errorHandler?.onWarning) {
@@ -42,7 +47,7 @@ export class MasterBinding {
                 return;
             }
 
-            this._masterDataObject = masterDataObject;
+            this._masterDataObject = masterDataObject as DataObject<TMaster>;
             await this._masterDataObject.waitForReady();
 
             if (!this.validateBindingFields()) {
@@ -121,7 +126,7 @@ export class MasterBinding {
         this._bindingWhereClause = {
             field: this._bindingDef.childBindingField,
             operator: 'equals',
-            value: masterFieldValue
+            value: masterFieldValue as TChild[keyof TChild]
         };
     }
 

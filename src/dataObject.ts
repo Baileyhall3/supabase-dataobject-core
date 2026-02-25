@@ -49,7 +49,7 @@ export class DataObject<
     private _fields: DataObjectField<T>[] = [];
 
     public state: DataObjectState;
-    public masterBinding: MasterBinding | undefined;
+    public masterBinding: MasterBinding<any, T> | undefined;
     public storage: DataObjectStorage;
 
     private _childDataObjects: DataObject<any>[] = [];

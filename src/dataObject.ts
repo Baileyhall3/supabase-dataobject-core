@@ -701,8 +701,13 @@ export class DataObject<
      * Update the sort applied to the data. When set, will trigger a refresh.
      * @param sort - The new sort to be applied to the data object.
      */
-    public updateSort(sort: SortConfig<T>) {
+    public updateSort(sort: SortConfig<T> | SortConfig<T>[]) {
         this.options.sort = sort;
+        this.refresh();
+    }
+
+    public clearSort() {
+        this.options.sort = undefined;
         this.refresh();
     }
 

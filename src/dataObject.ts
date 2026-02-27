@@ -272,9 +272,10 @@ export class DataObject<
 
             // Apply sorting
             if (this.options.sort) {
-                query = query.order(this.options.sort.field, { 
-                    ascending: this.options.sort.direction === 'asc' 
-                });
+                const sortArray = this.normalizeSort(this.options.sort);
+                for (const sort of sortArray) {
+                    query = query.order(sort.field as string, { ascending: sort.direction === 'asc' });
+                }
             }
 
             // Apply record limit
@@ -718,6 +719,22 @@ export class DataObject<
      */
     public getRecordById(id: T["id"]): DataObjectRecord<T> | undefined {
         return this.data.find(x => x.id === id);
+    }
+
+    private normalizeSort(
+        sort?: SortConfig<T> | SortConfig<T>[]
+    ): Required<SortConfig<T>>[] {
+        if (!sort) return [];
+
+        const arr = Array.isArray(sort) ? sort : [sort];
+
+        return arr
+            .map((s, index) => ({
+            field: s.field,
+            direction: s.direction ?? 'asc',
+            order: s.order ?? index,
+            }))
+            .sort((a, b) => a.order - b.order);
     }
 
     /**

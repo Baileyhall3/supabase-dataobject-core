@@ -44,6 +44,8 @@ export interface DataObjectField<T extends DataRecordKey> {
 export interface SortConfig<T extends DataRecordKey> {
     field: keyof T;
     direction: "asc" | "desc";
+    /** Optional priority when applying multiple sorts. */
+    order?: number;
 }
 
 export interface WhereClause<T extends DataRecordKey> {
@@ -102,7 +104,7 @@ export interface DataObjectOptions<T extends DataRecordKey> {
     /** Array of where clauses to be applied when retrieving data from the view. */
     whereClauses?: WhereClause<T>[];
     /** Sorting to be applied to the returned data based on specified field and direction. */
-    sort?: SortConfig<T>;
+    sort?: SortConfig<T> | SortConfig<T>[];
     /** When specified, will only return the first x amount of records.
      * Leave blank to return all records.
      */

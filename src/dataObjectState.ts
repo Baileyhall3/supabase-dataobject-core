@@ -4,6 +4,8 @@ export class DataObjectState {
     private _isUpdating: boolean = false;
     private _isSaving: boolean = false;
     private _isDestroyed: boolean = false;
+    private _isInserting: boolean = false;
+    private _isDeleting: boolean = false;
 
     get isReady() { return this._isReady; }
     set isReady(value: boolean) { this._isReady = value; }
@@ -20,6 +22,12 @@ export class DataObjectState {
     get isDestroyed() { return this._isDestroyed; }
     set isDestroyed(value: boolean) { this._isDestroyed = value; }
 
+    get isInserting() { return this._isInserting; }
+    set isInserting(value: boolean) { this._isInserting = value; }
+
+    get isDeleting() { return this._isDeleting; }
+    set isDeleting(value: boolean) { this._isDeleting = value; }
+
     // public get isBusy(): boolean {
     //     return this.isRefreshing || this.isUpdating;
     // }
@@ -30,5 +38,6 @@ export class DataObjectState {
         this.isUpdating = false;
         this.isSaving = false
         this.isDestroyed = false;
+        this.isInserting = false;
     }
 }

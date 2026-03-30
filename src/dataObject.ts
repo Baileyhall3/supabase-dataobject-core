@@ -473,6 +473,7 @@ export class DataObject<
         updates: Partial<T>, 
         skipRefresh: boolean = false
     ): Promise<boolean> {
+        if (this.state.isUpdating) { return false; }
         if (!this.options.canUpdate || !this.options.tableName) {
             this.handleWarning('Update operation is not allowed for this data object.');
             return false;
@@ -528,6 +529,7 @@ export class DataObject<
      * @returns true if delete was successful, false otherwise.
      */
     public async delete(id: T["id"]): Promise<boolean> {
+        if (this.state.isDeleting) { return false; }
         if (!this.options.canDelete || !this.options.tableName) {
             this.handleWarning('Delete operation is not allowed for this data object');
             return false;
@@ -546,6 +548,7 @@ export class DataObject<
         if (deleteToken.cancelEvent) { return false; }
 
         try {
+            this.state.isDeleting = true;
             const { error } = await this.supabase
                 .from(this.options.tableName)
                 .delete()
@@ -564,8 +567,187 @@ export class DataObject<
         } catch (error) {
             this.handleError(`Error deleting record: ${error}`);
             return false;
+        } finally {
+            this.state.isDeleting = false;
         }
     }
+
+    // #region Bulk Operations
+
+    /**
+     * Creates new records in Supabase.
+     * @param records - Partial records to insert.
+     * @returns The newly created DataObjectRecords, or null if insert fails.
+     */
+    public async bulkInsert(records: Partial<T>[], setAsCurrent = true): Promise<DataObjectRecord<T> | null[] | null> {
+        if (!this.options.canInsert || !this.options.tableName) {
+            this.handleWarning('Bulk insert operation is not allowed for this data object');
+            return null;
+        }
+
+        const insertToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
+            ...this.options,
+            cancel: () => { insertToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+
+        this.lifeCycleEvents.emit('beforeBulkInsert', insertToken, records);
+        if (insertToken.cancelEvent) return null;
+
+        try {
+            const { data, error } = await this.supabase
+                .from(this.options.tableName)
+                .insert(records)
+                .select();
+
+            if (error || !data?.length) {
+                this.handleError(`Error inserting records: ${error?.message ?? 'No data returned'}`);
+                return null;
+            }
+            
+            const newRecord = data[0];
+
+            if (setAsCurrent) {
+                this._currentRecord = newRecord;
+            }
+
+            this.lifeCycleEvents.emit('afterBulkInsert', data);
+
+            await this.refresh();
+
+            this.handleInfo(`${records.length} records inserted successfully`);
+
+            return newRecord;
+        } catch (err) {
+            this.handleError(`Error inserting records: ${err}`);
+            return null;
+        }
+    }
+
+    /**
+     * Updates multiple records in Supabase with the updates supplied.
+     * @param ids - The ids of the records to update.
+     * @param values - The values to update the records with.
+     * @param optimistic - Whether to optimistically update the records in the data object without refreshing after the update. Default is true.
+     * @returns True if update was successful, false otherwise.
+     */
+    async bulkUpdate(
+        ids: T["id"][],
+        values: Partial<T>,
+        optimistic = true
+    ): Promise<boolean> {
+        if (this.state.isUpdating) return false;
+        if (!this.options.canUpdate || !this.options.tableName) {
+            this.handleWarning('Update operation is not allowed for this data object');
+            return false;
+        }
+
+        if (!ids.length) return false;
+
+        const idSet = new Set(ids);
+        const records = this.data.filter(x => idSet.has(x.id));
+
+        if (records.length !== ids.length) {
+            this.handleWarning('Some records not found');
+            return false;
+        }
+
+        const updateToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
+            ...this.options,
+            cancel: () => { updateToken.cancelEvent = true; },
+            cancelEvent: false,
+        };
+
+        this.lifeCycleEvents.emit('beforeBulkUpdate', updateToken, records, values);
+        if (updateToken.cancelEvent) return false;
+
+        try {
+            this.state.isUpdating = true;
+
+            const { error } = await this.supabase
+                .from(this.options.tableName)
+                .update(values)
+                .in('id', ids);
+
+            if (error) {
+                this.handleError(`Error updating records: ${error.message}`);
+                return false;
+            }
+
+            if (optimistic) {
+                this.data = this.data.map(record =>
+                    idSet.has(record.id)
+                        ? { ...record, ...values }
+                        : record
+                    );
+            } else {
+                await this.refresh();
+            }
+
+            this.lifeCycleEvents.emit('afterBulkUpdate', ids, values);
+            this.handleInfo(`${ids.length} records updated successfully`);
+
+            return true;
+        } catch (error) {
+            this.handleError(`Error updating records: ${error}`);
+            return false;
+        } finally {
+            this.state.isUpdating = false;
+        }
+    }
+
+    /**
+     * Deletes multiple records from Supabase.
+     * @param ids - The ids of the records to delete.
+     * @returns true if delete was successful, false otherwise.
+     */
+    async bulkDelete(ids: (T["id"])[]): Promise<boolean> {
+        if (this.state.isDeleting) { return false; }
+        if (!this.options.canDelete || !this.options.tableName) {
+            this.handleWarning('Delete operation is not allowed for this data object');
+            return false;
+        }
+
+        if (!ids.length) return false;
+
+        const idSet = new Set(ids);
+        const records = this.data.filter(x => idSet.has(x.id));
+
+        const deleteToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
+            ...this.options,
+            cancel: () => { deleteToken.cancelEvent = true; }, 
+            cancelEvent: false,
+        };
+
+        this.lifeCycleEvents.emit('beforeBulkDelete', deleteToken, records);
+        if (deleteToken.cancelEvent) { return false; }
+
+        try {
+            this.state.isDeleting = true;
+            const { error } = await this.supabase
+                .from(this.options.tableName)
+                .delete()
+                .in('id', ids)
+
+            if (error) {
+                this.handleError(`Error deleting record: ${error.message}`);
+                return false;
+            }
+
+            // Refresh data to get the latest state
+            await this.refresh();
+            this.lifeCycleEvents.emit('afterBulkDelete', ids);
+            this.handleInfo(`${ids.length} records deleted successfully`);
+            return true;
+        } catch (error) {
+            this.handleError(`Error deleting records: ${error}`);
+            return false;
+        } finally {
+            this.state.isDeleting = false;
+        }
+    }
+
+    // #end region
 
     /**
      * Saves all pending changes in parallel to Supabase using the update() method, then refreshes data object.
@@ -735,13 +917,13 @@ export class DataObject<
 
         return arr
             .map((s, index) => ({
-            field: s.field,
+            field: s.field, 
             direction: s.direction ?? 'asc',
             order: s.order ?? index,
             }))
             .sort((a, b) => a.order - b.order);
     }
-
+ 
     /**
      * Helper method to dispose of a data object in order to prevent memory leaks.
      * Disposes of all child data objects and resets state to default.

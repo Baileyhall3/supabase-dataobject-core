@@ -187,7 +187,16 @@ export type DataObjectEvents<T extends DataRecordKey> = {
 
     fieldChanged: [record: DataObjectRecord<T>, updates: Partial<T>];
 
-    currentRecordChanged: [previousRecord: DataObjectRecord<T> | undefined, newRecord: DataObjectRecord<T> | undefined]
+    currentRecordChanged: [previousRecord: DataObjectRecord<T> | undefined, newRecord: DataObjectRecord<T> | undefined];
+
+    beforeBulkInsert: [options: DataObjectCancelableEvent & DataObjectOptions<T>, records: Partial<T>[]];
+    afterBulkInsert: [records: DataObjectRecord<T>[]];
+
+    beforeBulkUpdate: [options: DataObjectCancelableEvent & DataObjectOptions<T>, records: DataObjectRecord<T>[], updates: Partial<T>];
+    afterBulkUpdate: [ids: T["id"][], updates: Partial<T>];
+
+    beforeBulkDelete: [options: DataObjectCancelableEvent & DataObjectOptions<T>, records: DataObjectRecord<T>[]];
+    afterBulkDelete: [ids: T["id"][]];
 }
 
 export interface DataObjectCancelableEvent {

@@ -4,7 +4,6 @@ import {
     DataObjectRecord, 
     SupportedOperator, 
     WhereClause, 
-    SupabaseConfig, 
     DataObjectEvents, 
     DataObjectCancelableEvent,
     DataObjectField,
@@ -133,12 +132,12 @@ export class DataObject<
     }
 
     constructor(
-        supabaseConfig: SupabaseConfig, 
+        supabase: SupabaseClient, 
         options: DataObjectOptions<T>, 
         name: string,
         errorHandler?: DataObjectErrorHandler
     ) {
-        this.supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey);
+        this.supabase = supabase;
         this._options = this.setDefaultOptions(options);
         this.errorHandler = errorHandler;
         this._name = name;
@@ -492,10 +491,17 @@ export class DataObject<
 
         try {
             this.state.isUpdating = true;
-            const { error } = await this.supabase
+            // const { error } = await this.supabase
+            //     .from(this.options.tableName)
+            //     .update(updates)
+            //     .eq('id', id);
+
+            const { data, error } = await this.supabase
                 .from(this.options.tableName)
                 .update(updates)
-                .eq('id', id);
+                .eq('id', id)
+                .select()
+                .single();
 
             if (error) {
                 this.handleError(`Error updating record: ${error.message}`);
@@ -503,7 +509,7 @@ export class DataObject<
             }
 
             if (skipRefresh) {
-                record.applyServerUpdates(updates);
+                record.applyServerUpdates(data);
             } else {
                 await this.refresh();
             }
@@ -965,10 +971,10 @@ export class DataObject<
 export async function createDataObject<
   T extends DataRecordKey = DataRecordKey
 >(
-    supabaseConfig: SupabaseConfig,
+    supabase: SupabaseClient,
     options: DataObjectOptions<T>,
     name: string,
     errorHandler?: DataObjectErrorHandler
 ): Promise<DataObject<T>> {
-    return new DataObject<T>(supabaseConfig, options, name, errorHandler);
+    return new DataObject<T>(supabase, options, name, errorHandler);
 }

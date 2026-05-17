@@ -1,7 +1,6 @@
 import { DataObjectErrorHandler } from "./dataObject";
 import { SupabaseClient } from '@supabase/supabase-js';
 
-
 export class DataObjectStorage {
     private _dataObjectName: string;
     private _allowedBuckets: string[] = [];

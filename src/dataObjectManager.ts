@@ -2,8 +2,11 @@ import { DataObject, DataObjectErrorHandler } from './dataObject';
 import type { DataObjectOptions, SupabaseConfig, StoredDataObject, DataRecordKey } from './types';
 import { EventEmitter } from './eventEmitter';
 
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+
 export interface DataObjectManagerConfig {
-    supabaseConfig: SupabaseConfig;
+    supabaseConfig?: SupabaseConfig;
+    supabaseClient?: SupabaseClient;
     errorHandler?: DataObjectErrorHandler;
 }
 
@@ -12,11 +15,17 @@ export class DataObjectManager {
     private dataObjects: Map<string, StoredDataObject<any>> = new Map();
     private config: DataObjectManagerConfig;
     private eventEmitter = new EventEmitter<StoredDataObject<any>[]>();
+
+    private supabase: SupabaseClient;
     
     public readonly onDataObjectsChanged = this.eventEmitter.event;
 
     private constructor(config: DataObjectManagerConfig) {
         this.config = config;
+        if (!config.supabaseConfig && !config.supabaseClient) {
+            throw new Error('Either supabaseConfig or supabaseClient must be provided in DataObjectManagerConfig');
+        }
+        this.supabase = config.supabaseClient || createClient(config.supabaseConfig!.url, config.supabaseConfig!.anonKey);
     }
 
     public static getInstance(config?: DataObjectManagerConfig): DataObjectManager {
@@ -67,7 +76,7 @@ export class DataObjectManager {
             }
 
             const dataObject = new DataObject<T>(
-                this.config.supabaseConfig, 
+                this.supabase, 
                 options, 
                 name,
                 this.config.errorHandler,

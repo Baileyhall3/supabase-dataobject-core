@@ -217,7 +217,7 @@ export class DataObject<
         try {
             this.state.isRefreshing = true;
 
-            let query: any = this.buildSelectQuery();
+            let query: any = this.buildQuery();
             const { data, error } = await query;
 
             if (error) {
@@ -234,7 +234,7 @@ export class DataObject<
             
             this.applyGrouping();
 
-            this.currentRecord = data.length > 0 ? this.data[0] : undefined;
+            this.currentRecord = rawData.length > 0 ? this.data[0] : undefined;
             
             this.eventEmitter.fire(this.data);
             this.lifeCycleEvents.emit('afterLoad', this.data);
@@ -273,7 +273,7 @@ export class DataObject<
 
     /** Gets the newest version of a record from Supavase by its ID. */
     public async fetchRecordById(id: T["id"]): Promise<T | undefined> {
-        const query = this.buildSelectQuery()
+        const query = this.buildQuery()
             .eq("id", id)
             .limit(1);
 
@@ -779,7 +779,7 @@ export class DataObject<
     }
 
     /** Builds the select query for fetching data from Supabase. */
-    private buildSelectQuery(): any {
+    private buildQuery(): any {
         // Start with base query
         let query: any = this.supabase.from(this.options.viewName);
 
@@ -868,7 +868,7 @@ export class DataObject<
             query = query.limit(this.options.recordLimit);
         }
 
-        return query.toString();
+        return query;
     }
 
     /**

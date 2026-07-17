@@ -10,7 +10,8 @@ import {
     MasterDataObjectBinding,
     SortConfig,
     GroupByConfig,
-    DataRecordKey
+    DataRecordKey,
+    RelationshipConfig
 } from './types';
 import { EventEmitter } from './eventEmitter';
 import { NamedEventEmitter } from './namedEventEmitter';
@@ -127,6 +128,10 @@ export class DataObject<
         return this._options;
     }
 
+    public get relationships(): ReadonlyArray<RelationshipConfig> {
+        return this._options.relationships || [];
+    }
+
     public get groupedData() {
         return this._groupedData;
     }
@@ -214,14 +219,31 @@ export class DataObject<
             // Start with base query
             let query: any = this.supabase.from(this.options.viewName);
 
-            // Apply select fields
+            // Apply select fields and relationships
+            const selections: string[] = [];
+
             if (this.options.fields && this.options.fields.length > 0) {
                 this._fields = this.options.fields;
-                const fieldNames = this.options.fields.map(f => f.name).join(',');
-                query = query.select(fieldNames);
-            } else {
-                query = query.select('*');
+
+                selections.push(
+                    this.options.fields
+                        .map(f => String(f.name))
+                        .join(",")
+                );
             }
+            else {
+                selections.push("*");
+            }
+
+            if (this.options.relationships?.length) {
+                selections.push(
+                    this.buildRelationshipSelect(
+                        this.options.relationships
+                    )
+                );
+            }
+
+            query = query.select(selections.join(","));
 
             // Apply where clauses
             if (this.options.whereClauses) {
@@ -883,6 +905,46 @@ export class DataObject<
             canDelete: options.tableName ? (options.canDelete ?? false) : false,
             autoRefresh: options.autoRefresh ?? true
         };
+    }
+
+    /**
+     * Builds the select string for the relationships defined in the data object options.
+     * @param relationships - Array of RelationshipConfig objects to build the select string for.
+     * @returns The built select string.
+     */
+    private buildRelationshipSelect(relationships: RelationshipConfig<T>[]): string {
+        return relationships
+            .map((relationship) => {
+                let relationshipName = relationship.name;
+
+                if (relationship.alias) {
+                    relationshipName = `${relationship.alias}:${relationshipName}`;
+                }
+
+                if (relationship.foreignKey) {
+                    relationshipName += `!${relationship.foreignKey}`;
+                }
+
+                const fields = relationship.fields?.length
+                    ? relationship.fields.map(String)
+                    : ["*"];
+
+                const nestedRelationships = relationship.relationships?.length
+                    ? this.buildRelationshipSelect(
+                        relationship.relationships
+                    )
+                    : "";
+
+                const selections = [
+                    ...fields,
+                    nestedRelationships
+                ]
+                    .filter(Boolean)
+                    .join(",");
+
+                return `${relationshipName}(${selections})`;
+            })
+            .join(",");
     }
 
     /**

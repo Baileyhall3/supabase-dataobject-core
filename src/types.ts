@@ -54,6 +54,17 @@ export interface WhereClause<T extends DataRecordKey> {
     value?: T[keyof T];
 }
 
+export interface RelationshipConfig<T extends DataRecordKey = DataRecordKey> {
+    /** Relationship name */
+    name: string;
+    /** Optional alias, allowing for multiple relationships to the same table/view with different names */
+    alias?: string;
+    /** Optional FK constraint to join through */
+    foreignKey?: string;
+    fields?: (keyof T)[];
+    relationships?: RelationshipConfig[];
+}
+
 /* ============================= */
 /* Binding                       */
 /* ============================= */
@@ -111,17 +122,17 @@ export interface DataObjectOptions<T extends DataRecordKey> {
     recordLimit?: number;
     /** Controls whether or not the data object can be inserted into.
      * Will be overridden to false if no tableName defined as cannnot insert into a view.
-     * Default is false.
+     * @default false
      */
     canInsert?: boolean;
     /** Controls whether a data object can be updated.
      * Will be overriden to false if no tableName defined, as cannot update records from a view.
-     * Default is false.
+     * @default false
      */
     canUpdate?: boolean;
     /** Controls whether a data object can be updated.
      * Will be overriden to false if no tableName defined, as cannot delete from a view.
-     * Default is false.
+     * @default false
      */
     canDelete?: boolean;
     /** The binding to this data object's master data object. 
@@ -133,13 +144,17 @@ export interface DataObjectOptions<T extends DataRecordKey> {
     /** Controls whether the data object should refresh without prompt.
      * If false, the data object will not refresh unless explicitly called.
      * If true, the data object will refresh on initialization, and when its master data object refreshes.
-     * Default is true.
+     * @default true
      */
     autoRefresh?: boolean;
     /** Configuration for grouping to be applied to the data object. */
     groupBy?: GroupByConfig<T>;
     /** Array of bucket names which are allowed to be uploaded to. Leave empty to allow upload to all buckets. */
-    allowedBuckets?: string[]
+    allowedBuckets?: string[];
+    /** Array of relationship configurations to related tables or views
+     * using Supabase/PostgREST relationship definitions.
+     */
+    relationships?: RelationshipConfig<T>[];
 }
 
 export interface SupabaseConfig {

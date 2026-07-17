@@ -54,14 +54,16 @@ export interface WhereClause<T extends DataRecordKey> {
     value?: T[keyof T];
 }
 
-export interface RelationshipConfig<T extends DataRecordKey = DataRecordKey> {
+export interface RelationshipConfig {
     /** Relationship name */
     name: string;
-    /** Optional alias, allowing for multiple relationships to the same table/view with different names */
+    /** Optional alias, allowing multiple relationships to the same table/view with different names */
     alias?: string;
-    /** Optional FK constraint to join through */
+    /** Optional foreign key constraint to join through */
     foreignKey?: string;
-    fields?: (keyof T)[];
+    /** Fields to retrieve from the related table/view. Leave undefined to select all fields. */
+    fields?: string[];
+    /** Nested relationships */
     relationships?: RelationshipConfig[];
 }
 
@@ -154,7 +156,7 @@ export interface DataObjectOptions<T extends DataRecordKey> {
     /** Array of relationship configurations to related tables or views
      * using Supabase/PostgREST relationship definitions.
      */
-    relationships?: RelationshipConfig<T>[];
+    relationships?: RelationshipConfig[];
 }
 
 export interface SupabaseConfig {

@@ -128,7 +128,7 @@ export class DataObject<
         return this._options;
     }
 
-    public get relationships(): ReadonlyArray<RelationshipConfig<T>> {
+    public get relationships(): ReadonlyArray<RelationshipConfig> {
         return this._options.relationships || [];
     }
 
@@ -216,94 +216,8 @@ export class DataObject<
         if (cancelToken.cancelEvent) { return; }
         try {
             this.state.isRefreshing = true;
-            // Start with base query
-            let query: any = this.supabase.from(this.options.viewName);
 
-            // Apply select fields and relationships
-            const selections: string[] = [];
-
-            if (this.options.fields && this.options.fields.length > 0) {
-                this._fields = this.options.fields;
-
-                selections.push(
-                    this.options.fields
-                        .map(f => String(f.name))
-                        .join(",")
-                );
-            }
-            else {
-                selections.push("*");
-            }
-
-            if (this.options.relationships?.length) {
-                selections.push(
-                    this.buildRelationshipSelect(
-                        this.options.relationships
-                    )
-                );
-            }
-
-            query = query.select(selections.join(","));
-
-            // Apply where clauses
-            if (this.options.whereClauses) {
-                for (const whereClause of this.options.whereClauses) {
-                    switch (whereClause.operator) {
-                        case 'equals':
-                            query = query.eq(whereClause.field, whereClause.value);
-                            break;
-                        case 'notequals':
-                            query = query.neq(whereClause.field, whereClause.value);
-                            break;
-                        case 'greaterthan':
-                            query = query.gt(whereClause.field, whereClause.value);
-                            break;
-                        case 'lessthan':
-                            query = query.lt(whereClause.field, whereClause.value);
-                            break;
-                         case 'isnull':
-                            query = query.is(whereClause.field, null);
-                            break;
-                        case 'isnotnull':
-                            query = query.not(whereClause.field, 'is', null);
-                            break;
-                        case 'like':
-                            query = query.like(whereClause.field, `%${whereClause.value}%`);
-                            break;
-                        case 'ilike':
-                            query = query.ilike(whereClause.field, `%${whereClause.value}%`);
-                            break;
-                    }
-                }
-            }
-            
-            // Apply master binding where clause if it exists
-            if (this.masterBinding) {
-                const bindingWhereClause = this.masterBinding.bindingWhereClause;
-                if (!bindingWhereClause || bindingWhereClause.value === undefined || bindingWhereClause.value === null) {
-                    this.data = [];
-                    this.currentRecord = undefined;
-                    this.state.isReady = true;
-                    this.lifeCycleEvents.emit('afterLoad', this.data);
-                    return;
-                }
-
-                query = query.eq(bindingWhereClause.field, bindingWhereClause.value);
-            }
-
-            // Apply sorting
-            if (this.options.sort) {
-                const sortArray = this.normalizeSort(this.options.sort);
-                for (const sort of sortArray) {
-                    query = query.order(sort.field as string, { ascending: sort.direction === 'asc' });
-                }
-            }
-
-            // Apply record limit
-            if (this.options.recordLimit) {
-                query = query.limit(this.options.recordLimit);
-            }
-
+            let query: any = this.buildSelectQuery();
             const { data, error } = await query;
 
             if (error) {
@@ -331,14 +245,6 @@ export class DataObject<
             this.state.isRefreshing = false;
         }
     }
-
-    /**
-     * Fetches data created in loadData() method.
-     * @returns an array of DataObjectRecords
-     */
-    public getData(): DataObjectRecord<T>[] {
-        return [...this.data];
-    }
     
     /**
      * Refresh data to get the latest state. 
@@ -363,6 +269,28 @@ export class DataObject<
         } finally {
             this.state.isRefreshing = false;
         }
+    }
+
+    /** Gets the newest version of a record from Supavase by its ID. */
+    public async fetchRecordById(id: T["id"]): Promise<T | undefined> {
+        const query = this.buildSelectQuery()
+            .eq("id", id)
+            .limit(1);
+
+        const { data, error } = await query;
+
+        if (error) { throw error; }
+
+        return data?.[0];
+    }
+
+    /** Refreshes a record by its ID. */
+    public async refreshRecordById(id: T["id"]): Promise<void> {
+        const record = this.data.find(r => r.id === id);
+
+        if (!record) { return undefined; }
+
+        record.refresh();
     }
 
     //** Apply groupBy to the data returned from loadData() and populate groupedData. */
@@ -850,6 +778,99 @@ export class DataObject<
         return record;
     }
 
+    /** Builds the select query for fetching data from Supabase. */
+    private buildSelectQuery(): any {
+        // Start with base query
+        let query: any = this.supabase.from(this.options.viewName);
+
+        // Apply select fields and relationships
+        const selections: string[] = [];
+
+        if (this.options.fields && this.options.fields.length > 0) {
+            this._fields = this.options.fields;
+
+            selections.push(
+                this.options.fields
+                    .map(f => String(f.name))
+                    .join(",")
+            );
+        } else {
+            selections.push("*");
+        }
+
+        if (this.options.relationships?.length) {
+            selections.push(
+                this.buildRelationshipSelect(
+                    this.options.relationships
+                )
+            );
+        }
+
+        query = query.select(selections.join(","));
+
+        // Apply where clauses
+        if (this.options.whereClauses) {
+            for (const whereClause of this.options.whereClauses) {
+                switch (whereClause.operator) {
+                    case 'equals':
+                        query = query.eq(whereClause.field, whereClause.value);
+                        break;
+                    case 'notequals':
+                        query = query.neq(whereClause.field, whereClause.value);
+                        break;
+                    case 'greaterthan':
+                        query = query.gt(whereClause.field, whereClause.value);
+                        break;
+                    case 'lessthan':
+                        query = query.lt(whereClause.field, whereClause.value);
+                        break;
+                        case 'isnull':
+                        query = query.is(whereClause.field, null);
+                        break;
+                    case 'isnotnull':
+                        query = query.not(whereClause.field, 'is', null);
+                        break;
+                    case 'like':
+                        query = query.like(whereClause.field, `%${whereClause.value}%`);
+                        break;
+                    case 'ilike':
+                        query = query.ilike(whereClause.field, `%${whereClause.value}%`);
+                        break;
+                }
+            }
+        }
+        
+        // Apply master binding where clause if it exists
+        if (this.masterBinding) {
+            const bindingWhereClause = this.masterBinding.bindingWhereClause;
+            if (!bindingWhereClause || bindingWhereClause.value === undefined || bindingWhereClause.value === null) {
+                this.data = [];
+                this.currentRecord = undefined;
+                this.state.isReady = true;
+                this.lifeCycleEvents.emit('afterLoad', this.data);
+
+                throw new Error('Master binding value is undefined or null, cannot build select query.');
+            }
+
+            query = query.eq(bindingWhereClause.field, bindingWhereClause.value);
+        }
+
+        // Apply sorting
+        if (this.options.sort) {
+            const sortArray = this.normalizeSort(this.options.sort);
+            for (const sort of sortArray) {
+                query = query.order(sort.field as string, { ascending: sort.direction === 'asc' });
+            }
+        }
+
+        // Apply record limit
+        if (this.options.recordLimit) {
+            query = query.limit(this.options.recordLimit);
+        }
+
+        return query.toString();
+    }
+
     /**
      * Gets the options defined for the created data object.
      */
@@ -912,7 +933,7 @@ export class DataObject<
      * @param relationships - Array of RelationshipConfig objects to build the select string for.
      * @returns The built select string.
      */
-    private buildRelationshipSelect(relationships: RelationshipConfig<T>[]): string {
+    private buildRelationshipSelect(relationships: RelationshipConfig[]): string {
         return relationships
             .map((relationship) => {
                 let relationshipName = relationship.name;
@@ -974,6 +995,14 @@ export class DataObject<
      */
     public getRecordById(id: T["id"]): DataObjectRecord<T> | undefined {
         return this.data.find(x => x.id === id);
+    }
+
+    /**
+     * Fetches data created in loadData() method.
+     * @returns an array of DataObjectRecords
+     */
+    public getData(): DataObjectRecord<T>[] {
+        return [...this.data];
     }
 
     private normalizeSort(

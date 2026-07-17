@@ -144,6 +144,45 @@ export class DataRecord<T extends { id: unknown }> {
         this._original = JSON.parse(JSON.stringify(this._record));
         this.clearChanges();
     }
+
+    /** Refreshes the record with the latest data from the server. Any pending changes will be lost. */
+    public async refresh(): Promise<void> {
+        if (this._state.isRefreshing) { return; }
+
+        this._state.isRefreshing = true;
+
+        this.clearChanges();
+
+        try {
+            const freshRecord = await this._dataObject.fetchRecordById(this.id);
+
+            if (!freshRecord) {
+                throw new Error(`Record with id ${this.id} could not be found`);
+            }
+
+            this.applyRefresh(freshRecord);
+
+        } finally {
+            this._state.isRefreshing = false;
+        }
+    }
+
+    private applyRefresh(record: T) {
+        const oldRecord = this._record;
+
+        for (const key of Object.keys(record) as (keyof T)[]) {
+
+            if (oldRecord[key] !== record[key]) {
+                oldRecord[key] = record[key];
+
+                this._onFieldChanged?.(this, key);
+            }
+        }
+
+        this._original = JSON.parse(JSON.stringify(record));
+
+        this.clearChanges();
+    }
 }
 
 export class DataRecordState {

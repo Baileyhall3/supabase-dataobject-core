@@ -128,7 +128,7 @@ export class DataObject<
         return this._options;
     }
 
-    public get relationships(): ReadonlyArray<RelationshipConfig> {
+    public get relationships(): ReadonlyArray<RelationshipConfig<T>> {
         return this._options.relationships || [];
     }
 

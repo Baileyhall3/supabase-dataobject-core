@@ -836,6 +836,12 @@ export class DataObject<
                     case 'ilike':
                         query = query.ilike(whereClause.field, `%${whereClause.value}%`);
                         break;
+                    case 'in':
+                        query = query.in(whereClause.field, whereClause.value as any[]);
+                        break;
+                    case 'notin':
+                        query = query.not(whereClause.field, 'in', whereClause.value as any[]);
+                        break;
                 }
             }
         }

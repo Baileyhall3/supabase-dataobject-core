@@ -30,7 +30,9 @@ export type SupportedOperator =
     | "isnull"
     | "isnotnull"
     | "like"
-    | "ilike";
+    | "ilike"
+    | "in"
+    | "notin";
 
 /* ============================= */
 /* Field / Query Config          */
@@ -48,11 +50,29 @@ export interface SortConfig<T extends DataRecordKey> {
     order?: number;
 }
 
-export interface WhereClause<T extends DataRecordKey> {
-    field: keyof T;
-    operator: SupportedOperator;
-    value?: T[keyof T];
-}
+export type WhereClause<T extends DataRecordKey> = {
+    [K in keyof T]:
+        | {
+            field: K;
+            operator: 'equals' | 'notequals' | 'greaterthan' | 'lessthan';
+            value: T[K];
+        }
+        | {
+            field: K;
+            operator: 'in' | 'notin';
+            value: T[K][];
+        }
+        | {
+            field: K;
+            operator: 'isnull' | 'isnotnull';
+            value?: never;
+        }
+        | {
+            field: K;
+            operator: 'like' | 'ilike';
+            value: string;
+        }
+}[keyof T];
 
 export interface RelationshipConfig {
     /** Relationship name */

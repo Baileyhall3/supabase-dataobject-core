@@ -840,7 +840,12 @@ export class DataObject<
                         query = query.in(whereClause.field, whereClause.value as any[]);
                         break;
                     case 'notin':
-                        query = query.not(whereClause.field, 'in', whereClause.value as any[]);
+                        const values = whereClause.value as (string | number)[];
+                        const formattedValues = values
+                            .map(value => typeof value === 'string' ? `"${value.replace(/"/g, '\\"')}"` : value)
+                            .join(',');
+
+                        query = query.not(whereClause.field, 'in', `(${formattedValues})`);
                         break;
                 }
             }

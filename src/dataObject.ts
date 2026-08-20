@@ -305,16 +305,17 @@ export class DataObject<
             return;
         }
         // TODO: Add handling for field not existing
-        const groups: Record<string, DataObjectRecord<T>[]> = {};
+        const groups = new Map<T[keyof T], DataObjectRecord<T>[]>();
 
         for (const record of this.data) {
-            const rawKey = record[groupBy.field];
-            const key = String(rawKey);
-            if (!groups[key]) groups[key] = [];
-            groups[key].push(record);
+            const key = record[groupBy.field];
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key)!.push(record);
         }
 
-        const results = Object.entries(groups).map(([groupValue, records]) => {
+        const results = Array.from(groups.entries()).map(([groupValue, records]) => {
             const aggregates: Record<string, number> = {};
 
             if (groupBy.aggregates) {

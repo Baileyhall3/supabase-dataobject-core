@@ -136,6 +136,10 @@ export class DataObject<
         return this._groupedData;
     }
 
+    public get hasGroupBy(): boolean {
+        return !!this.options.groupBy;
+    }
+
     constructor(
         supabase: SupabaseClient, 
         options: DataObjectOptions<T>, 
@@ -994,7 +998,7 @@ export class DataObject<
     }
 
     /** Set a new groupBy config on the dataObject to update groupedData. */
-    public setGroupBy(config: GroupByConfig<T>) {
+    public setGroupBy(config: GroupByConfig<T> | undefined) {
         this.options.groupBy = config;
         this.applyGrouping();
     }

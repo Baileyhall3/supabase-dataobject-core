@@ -1,13 +1,11 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { 
-    DataObjectOptions, 
-    DataObjectRecord, 
-    SupportedOperator, 
-    WhereClause, 
-    DataObjectEvents, 
+import { SupabaseClient } from '@supabase/supabase-js';
+import {
+    DataObjectOptions,
+    DataObjectRecord,
+    WhereClause,
+    DataObjectEvents,
     DataObjectCancelableEvent,
     DataObjectField,
-    MasterDataObjectBinding,
     SortConfig,
     GroupByConfig,
     DataRecordKey,
@@ -19,6 +17,8 @@ import { DataObjectState } from './dataObjectState';
 import { MasterBinding } from './masterBinding';
 import { DataObjectStorage } from './dataObjectStorage';
 import { DataRecord } from './dataRecord';
+import { buildSelectQuery, relationshipKeys } from './queryBuilder';
+import { groupRecords, DataObjectGroup } from './grouping';
 
 export interface DataObjectErrorHandler {
     onError?: (error: string) => void;
@@ -34,7 +34,7 @@ export class DataObject<
     private errorHandler?: DataObjectErrorHandler;
     private _name: string;
     private _readyPromise: Promise<void>;
-    
+
     public data: DataObjectRecord<T>[] = [];
 
     private eventEmitter = new EventEmitter<DataObjectRecord<T>[]>();
@@ -54,12 +54,25 @@ export class DataObject<
 
     private _childDataObjects: DataObject<any>[] = [];
 
-    private _groupedData: {
-        groupValue: any;
-        records: DataObjectRecord<T>[];
-        aggregates: Record<string, number>;
-        additionalFields: Record<string, any>;
-    }[] = [];
+    private _groupedData: DataObjectGroup<T>[] = [];
+
+    /** id -> record index for O(1) getRecordById(). Validated on read, so it can't go stale. */
+    private _recordsById = new Map<unknown, DataObjectRecord<T>>();
+    /** The `data` array the index was built from. */
+    private _indexedData: DataObjectRecord<T>[] | null = null;
+
+    /** Monotonic load counter: only the latest load may apply its results ("latest wins"). */
+    private _loadSeq = 0;
+    private _loadAbort?: AbortController;
+    private _currentLoad?: Promise<boolean>;
+    private _currentLoadSeq = 0;
+
+    /** Record ids with an update/delete in flight (per-record guard instead of a global one). */
+    private _updatingIds = new Set<unknown>();
+    private _deletingIds = new Set<unknown>();
+
+    /** When set, the next load makes the record with this id current (used by insert). */
+    private _preferredCurrentId: T["id"] | undefined;
 
     public get name(): string {
         return this._name;
@@ -74,21 +87,7 @@ export class DataObject<
     }
 
     public set currentRecord(record: DataObjectRecord<T> | undefined) {
-        if (this._currentRecord?.id === record?.id) return;
-
-        const previousRecord = this._currentRecord;
-        this._currentRecord = record;
-
-        this.lifeCycleEvents.emit('currentRecordChanged', previousRecord, record);
-        this.eventEmitter.fire(this.data);
-
-        for (const child of this._childDataObjects) {
-            if (!child.state.isDestroyed && child.state.isReady) {
-                child.refresh().catch(err =>
-                    console.warn(`Child refresh failed for ${child.name}:`, err)
-                );
-            }
-        }
+        this.setCurrentRecord(record, true);
     }
 
     public get fields(): DataObjectField<T>[] {
@@ -141,8 +140,8 @@ export class DataObject<
     }
 
     constructor(
-        supabase: SupabaseClient, 
-        options: DataObjectOptions<T>, 
+        supabase: SupabaseClient,
+        options: DataObjectOptions<T>,
         name: string,
         errorHandler?: DataObjectErrorHandler
     ) {
@@ -161,7 +160,14 @@ export class DataObject<
     }
 
     private async initializeDataObject(): Promise<void> {
-        await this.inferFields();
+        if (this.options.fields && this.options.fields.length > 0) {
+            this._fields = this.options.fields;
+        } else if (!this.options.autoRefresh) {
+            // No load will follow, so fields must be inferred up front (previous behaviour).
+            await this.inferFields();
+        }
+        // Otherwise fields are inferred from the first load's result, saving a round trip.
+
         if (this.options.masterDataObjectBinding) {
             this.masterBinding = new MasterBinding(
                 this,
@@ -170,16 +176,22 @@ export class DataObject<
             )
             await this.masterBinding.initialize();
         }
-        
+
         if (this.options.autoRefresh) {
             await this.loadData();
+        }
+
+        // Fallback (edge cases only: empty result, load error, unbound child):
+        // infer fields the old way so `fields` is populated as before.
+        if (this._fields.length === 0 && !this.state.isDestroyed) {
+            await this.inferFields();
         }
     }
 
     public async waitForReady(): Promise<void> {
         await this._readyPromise;
     }
-    
+
     private handleError(message: string): void {
         if (this.errorHandler?.onError) {
             this.errorHandler.onError(message);
@@ -204,80 +216,196 @@ export class DataObject<
         }
     }
 
+    private createCancelToken(): DataObjectCancelableEvent & DataObjectOptions<T> {
+        const token: DataObjectCancelableEvent & DataObjectOptions<T> = {
+            ...this.options,
+            cancel: () => { token.cancelEvent = true; },
+            cancelEvent: false,
+        };
+        return token;
+    }
+
     // #region Load Operations
 
     /**
      * Loads data from Supabase with the given parameters defined when creating data object.
+     * If a newer load starts while this one is in flight, this one is aborted and its result
+     * discarded; callers awaiting it resolve once the newest load has been applied.
+     * @returns true if this load's result was applied, false if cancelled or superseded.
      */
-    private async loadData(): Promise<void> {
-        const cancelToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { cancelToken.cancelEvent = true; },
-            cancelEvent: false,
-        };
+    private loadData(): Promise<boolean> {
+        const cancelToken = this.createCancelToken();
         this.lifeCycleEvents.emit('beforeLoad', cancelToken);
+        if (cancelToken.cancelEvent) { return Promise.resolve(false); }
 
-        if (cancelToken.cancelEvent) { return; }
+        const seq = ++this._loadSeq;
+        this._loadAbort?.abort();
+        const abort = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
+        this._loadAbort = abort;
+        this.state.isRefreshing = true;
+
+        const load = this.runLoad(seq, abort);
+        this._currentLoad = load;
+        this._currentLoadSeq = seq;
+        return load;
+    }
+
+    private async runLoad(seq: number, abort: AbortController | undefined): Promise<boolean> {
+        // Superseded = a newer load started (this one was aborted) or the object was disposed.
+        // Aborted requests come back as errors; they are never reported.
+        const superseded = () => seq !== this._loadSeq || this.state.isDestroyed;
+        const awaitNewest = async () => {
+            const newest = this._currentLoad;
+            if (newest && this._currentLoadSeq !== seq && !this.state.isDestroyed) {
+                await newest;
+            }
+            return false;
+        };
         try {
-            this.state.isRefreshing = true;
+            // Bound child with no master value (e.g. master has no rows): nothing to load.
+            if (this.masterBinding && !this.hasBindingValue()) {
+                this.setData([]);
+                this.eventEmitter.fire(this.data);
+                this.lifeCycleEvents.emit('afterLoad', this.data);
+                return true;
+            }
 
-            let query: any = this.buildQuery();
+            const query = buildSelectQuery<T>(this.supabase, {
+                viewName: this.options.viewName,
+                fields: this.options.fields,
+                relationships: this.options.relationships,
+                whereClauses: this.options.whereClauses,
+                bindingClause: this.masterBinding?.bindingWhereClause,
+                sort: this.options.sort,
+                recordLimit: this.options.recordLimit,
+                abortSignal: abort?.signal,
+            });
             const { data, error } = await query;
+
+            if (superseded()) {
+                return awaitNewest();
+            }
 
             if (error) {
                 this.handleError(`Error loading data: ${error.message}`);
-                this.state.isReady = true; // Mark as ready even if there's an error
-                return;
+                return true;
             }
 
-            // assign raw data first
-            const rawData = data || [];
+            const rawData: T[] = data || [];
+            this.inferFieldsFromRow(rawData[0]);
+            this.setData(rawData);
 
-            // wrap each record in a reactive Proxy
-            this.data = rawData.map((record: T) => this.createReactiveRecord(record));
-            
-            this.applyGrouping();
-
-            this.currentRecord = rawData.length > 0 ? this.data[0] : undefined;
-            
             this.eventEmitter.fire(this.data);
             this.lifeCycleEvents.emit('afterLoad', this.data);
+            return true;
         } catch (error) {
+            if (superseded()) {
+                return awaitNewest();
+            }
             this.handleError(`Error loading data: ${error}`);
+            return true;
         } finally {
-            this.state.isReady = true;
-            this.state.isRefreshing = false;
-        }
-    }
-    
-    /**
-     * Refresh data to get the latest state. 
-     */
-    public async refresh(): Promise<void> {
-        if (this.state.isRefreshing) { return; }
-        this.state.isRefreshing = true;
-        try {
-            const refreshToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-                ...this.options,
-                cancel: () => { refreshToken.cancelEvent = true; },
-                cancelEvent: false,
-            };
-            this.lifeCycleEvents.emit('beforeRefresh', refreshToken);
-            if (refreshToken.cancelEvent) { return; }
-    
-            await this.loadData();
-    
-            this.lifeCycleEvents.emit('afterRefresh', this.data);
-        } catch (err) {
-            this.handleError(`Error refreshing data object ${this.name}: ${err}`);
-        } finally {
-            this.state.isRefreshing = false;
+            if (seq === this._loadSeq) {
+                this.state.isReady = true;
+                this.state.isRefreshing = false;
+                this._loadAbort = undefined;
+            }
         }
     }
 
-    /** Gets the newest version of a record from Supavase by its ID. */
+    private hasBindingValue(): boolean {
+        const value = this.masterBinding?.bindingWhereClause?.value;
+        return value !== undefined && value !== null;
+    }
+
+    /**
+     * Replaces `data` with freshly wrapped records, rebuilds the id index and grouping,
+     * and resolves the current record (keeping the same id across refreshes when possible).
+     */
+    private setData(rawData: T[]): void {
+        const records = new Array<DataObjectRecord<T>>(rawData.length);
+        for (let i = 0; i < rawData.length; i++) {
+            records[i] = this.createReactiveRecord(rawData[i], i);
+        }
+        this.data = records;
+        this.rebuildIndex();
+        this.applyGrouping();
+
+        const preferredId = this._preferredCurrentId !== undefined
+            ? this._preferredCurrentId
+            : this._currentRecord?.id;
+        this._preferredCurrentId = undefined;
+
+        const next = (preferredId !== undefined ? this._recordsById.get(preferredId) : undefined) ?? records[0];
+        this.setCurrentRecord(next, false);
+    }
+
+    private rebuildIndex(): void {
+        this._recordsById.clear();
+        for (const record of this.data) {
+            this._recordsById.set(record.id, record);
+        }
+        this._indexedData = this.data;
+    }
+
+    /**
+     * Sets the current record.
+     * - Same id, different instance (e.g. after a refresh): swaps the reference silently so
+     *   currentRecord is always the live object in `data`.
+     * - Different id: emits currentRecordChanged and refreshes child data objects.
+     */
+    private setCurrentRecord(record: DataObjectRecord<T> | undefined, fireDataChanged: boolean): void {
+        if (this._currentRecord?.id === record?.id) {
+            this._currentRecord = record;
+            return;
+        }
+
+        const previousRecord = this._currentRecord;
+        this._currentRecord = record;
+
+        this.lifeCycleEvents.emit('currentRecordChanged', previousRecord, record);
+        if (fireDataChanged) {
+            this.eventEmitter.fire(this.data);
+        }
+
+        for (const child of this._childDataObjects) {
+            if (!child.state.isDestroyed && child.state.isReady) {
+                child.refresh().catch(err =>
+                    console.warn(`Child refresh failed for ${child.name}:`, err)
+                );
+            }
+        }
+    }
+
+    /**
+     * Refresh data to get the latest state.
+     * Calling refresh() while a refresh is in flight aborts the older request and loads again
+     * with the current options, so the final data always reflects the latest filters/sort.
+     */
+    public async refresh(): Promise<void> {
+        try {
+            const refreshToken = this.createCancelToken();
+            this.lifeCycleEvents.emit('beforeRefresh', refreshToken);
+            if (refreshToken.cancelEvent) { return; }
+
+            const applied = await this.loadData();
+
+            if (applied) {
+                this.lifeCycleEvents.emit('afterRefresh', this.data);
+            }
+        } catch (err) {
+            this.handleError(`Error refreshing data object ${this.name}: ${err}`);
+        }
+    }
+
+    /** Gets the newest version of a record from Supabase by its ID. */
     public async fetchRecordById(id: T["id"]): Promise<T | undefined> {
-        const query = this.buildQuery()
+        const query = buildSelectQuery<T>(this.supabase, {
+            viewName: this.options.viewName,
+            fields: this.options.fields,
+            relationships: this.options.relationships,
+            whereClauses: this.options.whereClauses,
+        })
             .eq("id", id)
             .limit(1);
 
@@ -288,78 +416,22 @@ export class DataObject<
         return data?.[0];
     }
 
-    /** Refreshes a record by its ID. */
+    /** Refreshes a record by its ID. Errors are reported through the error handler. */
     public async refreshRecordById(id: T["id"]): Promise<void> {
-        const record = this.data.find(r => r.id === id);
+        const record = this.getRecordById(id);
 
         if (!record) { return undefined; }
 
-        record.refresh();
+        try {
+            await record.refresh();
+        } catch (error) {
+            this.handleError(`Error refreshing record ${String(id)}: ${(error as any)?.message ?? error}`);
+        }
     }
 
     //** Apply groupBy to the data returned from loadData() and populate groupedData. */
     private applyGrouping(): void {
-        const { groupBy } = this.options;
-        if (!groupBy || !groupBy.field) {
-            this._groupedData = [];
-            return;
-        }
-        // TODO: Add handling for field not existing
-        const groups = new Map<T[keyof T], DataObjectRecord<T>[]>();
-
-        for (const record of this.data) {
-            const key = record[groupBy.field];
-            if (!groups.has(key)) {
-                groups.set(key, []);
-            }
-            groups.get(key)!.push(record);
-        }
-
-        const results = Array.from(groups.entries()).map(([groupValue, records]) => {
-            const aggregates: Record<string, number> = {};
-
-            if (groupBy.aggregates) {
-                for (const [alias, { op, field }] of Object.entries(groupBy.aggregates)) {
-                    const values = field
-                        ? records.map(r => Number(r[field] as unknown))
-                        : [];
-
-                    switch (op) {
-                        case 'sum':
-                            aggregates[alias] = values.reduce((a, b) => a + (b || 0), 0);
-                            break;
-                        case 'avg':
-                            aggregates[alias] = values.length
-                            ? values.reduce((a, b) => a + (b || 0), 0) / values.length
-                            : 0;
-                            break;
-                        case 'count':
-                            aggregates[alias] = records.length;
-                            break;
-                        case 'min':
-                            aggregates[alias] = Math.min(...values.filter(v => !isNaN(v)));
-                            break;
-                        case 'max':
-                            aggregates[alias] = Math.max(...values.filter(v => !isNaN(v)));
-                            break;
-                        default:
-                            this.handleWarning?.(`Unknown aggregate operation: ${op}`);
-                    }
-                }
-            }
-
-            const additional: Partial<T> = {};
-            if (groupBy.additionalFields && groupBy.additionalFields.length > 0) {
-                const first = records[0];
-                for (const f of groupBy.additionalFields) {
-                    additional[f] = first?.[f];
-                }
-            }
-
-            return { groupValue, records, aggregates, additionalFields: additional };
-        });
-
-        this._groupedData = results;
+        this._groupedData = groupRecords(this.data, this.options.groupBy, (m) => this.handleWarning(m));
     }
 
     // #region CRUD
@@ -367,7 +439,9 @@ export class DataObject<
     /**
      * Creates a new record in Supabase.
      * @param record - Partial record to insert.
-     * @returns The newly created DataObjectRecord, or null if insert fails.
+     * @param setAsCurrent - Make the inserted record the current record. Default is true.
+     * @returns The newly created DataObjectRecord (as found in `data` after refreshing),
+     * or the raw inserted row if it isn't part of this data object's result set, or null if insert fails.
      */
     public async insert(record: Partial<T>, setAsCurrent = true): Promise<DataObjectRecord<T> | null> {
         if (!this.options.canInsert || !this.options.tableName) {
@@ -375,16 +449,13 @@ export class DataObject<
             return null;
         }
 
-        const insertToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { insertToken.cancelEvent = true; },
-            cancelEvent: false,
-        };
+        const insertToken = this.createCancelToken();
 
         this.lifeCycleEvents.emit('beforeInsert', insertToken, record);
         if (insertToken.cancelEvent) return null;
 
         try {
+            this.state.isInserting = true;
             const { data, error } = await this.supabase
                 .from(this.options.tableName)
                 .insert(record)
@@ -395,15 +466,17 @@ export class DataObject<
                 return null;
             }
 
-            const newRecord = data[0];
+            const newRow = data[0] as T;
 
             if (setAsCurrent) {
-                this._currentRecord = newRecord;
+                this._preferredCurrentId = newRow.id;
             }
 
-            this.lifeCycleEvents.emit('afterInsert', newRecord);
-
             await this.refresh();
+
+            const newRecord = this.getRecordById(newRow.id) ?? (newRow as DataObjectRecord<T>);
+
+            this.lifeCycleEvents.emit('afterInsert', newRecord);
 
             this.handleInfo('Record inserted successfully');
 
@@ -411,52 +484,47 @@ export class DataObject<
         } catch (err) {
             this.handleError(`Error inserting record: ${err}`);
             return null;
+        } finally {
+            this.state.isInserting = false;
         }
     }
 
     /**
      * Updates a record in Supabase with the updates supplied.
      * Can only be called if a tableName is provided and canUpdate is set to true.
+     * Updates to *different* records may run concurrently; a second update to a record that
+     * is already being updated returns false.
      * @param id - The id of the record to update
      * @param updates - An object of fields and subsequent values to update
      * @param skipRefresh - When set to true, the data object will not refresh after updating. Default is false
      * @returns true if update was successful, false otherwise.
      */
     public async update(
-        id: T["id"], 
-        updates: Partial<T>, 
+        id: T["id"],
+        updates: Partial<T>,
         skipRefresh: boolean = false
     ): Promise<boolean> {
-        if (this.state.isUpdating) { return false; }
+        if (this._updatingIds.has(id)) { return false; }
         if (!this.options.canUpdate || !this.options.tableName) {
             this.handleWarning('Update operation is not allowed for this data object.');
             return false;
         }
-        
-        const record = this.data.find(x => x.id === id);
+
+        const record = this.getRecordById(id);
         if (!record) { return false; }
 
-        const updateToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { updateToken.cancelEvent = true; },
-            cancelEvent: false,
-        };
+        const updateToken = this.createCancelToken();
         this.lifeCycleEvents.emit('beforeUpdate', updateToken, record, updates);
         if (updateToken.cancelEvent) { return false; }
 
+        this.markBusy(this._updatingIds, [id]);
         try {
-            this.state.isUpdating = true;
-            // const { error } = await this.supabase
-            //     .from(this.options.tableName)
-            //     .update(updates)
-            //     .eq('id', id);
-
             const { data, error } = await this.supabase
                 .from(this.options.tableName)
                 .update(updates)
                 .eq('id', id)
                 .select()
-                .single();
+                .maybeSingle();
 
             if (error) {
                 this.handleError(`Error updating record: ${error.message}`);
@@ -464,12 +532,13 @@ export class DataObject<
             }
 
             if (skipRefresh) {
-                record.applyServerUpdates(data);
+                record.commitSaved(updates, data as Partial<T> | null);
+                this.eventEmitter.fire(this.data);
             } else {
                 await this.refresh();
             }
 
-            const updatedRecord = this.data.find(x => x.id === id);
+            const updatedRecord = this.getRecordById(id);
             if (updatedRecord) {
                 this.lifeCycleEvents.emit('afterUpdate', updatedRecord, updates);
             }
@@ -479,37 +548,33 @@ export class DataObject<
             this.handleError(`Error updating record: ${error}`);
             return false;
         } finally {
-            this.state.isUpdating = false;
+            this.markIdle(this._updatingIds, [id]);
         }
     }
 
     /**
-     * Method for deleting a record from Supabase. 
+     * Method for deleting a record from Supabase.
      * Can only be called if a tableName is provided and canDelete is set to true.
      * @param id - The id of the record to delete
      * @returns true if delete was successful, false otherwise.
      */
     public async delete(id: T["id"]): Promise<boolean> {
-        if (this.state.isDeleting) { return false; }
+        if (this._deletingIds.has(id)) { return false; }
         if (!this.options.canDelete || !this.options.tableName) {
             this.handleWarning('Delete operation is not allowed for this data object');
             return false;
         }
 
-        const record = this.data.find(x => x.id === id);
+        const record = this.getRecordById(id);
         if (!record) { return false; }
 
-        const deleteToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { deleteToken.cancelEvent = true; },
-            cancelEvent: false,
-        };
+        const deleteToken = this.createCancelToken();
 
         this.lifeCycleEvents.emit('beforeDelete', deleteToken, record);
         if (deleteToken.cancelEvent) { return false; }
 
+        this.markBusy(this._deletingIds, [id]);
         try {
-            this.state.isDeleting = true;
             const { error } = await this.supabase
                 .from(this.options.tableName)
                 .delete()
@@ -529,8 +594,23 @@ export class DataObject<
             this.handleError(`Error deleting record: ${error}`);
             return false;
         } finally {
-            this.state.isDeleting = false;
+            this.markIdle(this._deletingIds, [id]);
         }
+    }
+
+    private markBusy(set: Set<unknown>, ids: unknown[]): void {
+        for (const id of ids) set.add(id);
+        this.syncBusyState();
+    }
+
+    private markIdle(set: Set<unknown>, ids: unknown[]): void {
+        for (const id of ids) set.delete(id);
+        this.syncBusyState();
+    }
+
+    private syncBusyState(): void {
+        this.state.isUpdating = this._updatingIds.size > 0;
+        this.state.isDeleting = this._deletingIds.size > 0;
     }
 
     // #region Bulk Operations
@@ -538,7 +618,7 @@ export class DataObject<
     /**
      * Creates new records in Supabase.
      * @param records - Partial records to insert.
-     * @returns The newly created DataObjectRecords, or null if insert fails.
+     * @returns The first newly created DataObjectRecord, or null if insert fails.
      */
     public async bulkInsert(records: Partial<T>[], setAsCurrent = true): Promise<DataObjectRecord<T> | null[] | null> {
         if (!this.options.canInsert || !this.options.tableName) {
@@ -546,16 +626,13 @@ export class DataObject<
             return null;
         }
 
-        const insertToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { insertToken.cancelEvent = true; },
-            cancelEvent: false,
-        };
+        const insertToken = this.createCancelToken();
 
         this.lifeCycleEvents.emit('beforeBulkInsert', insertToken, records);
         if (insertToken.cancelEvent) return null;
 
         try {
+            this.state.isInserting = true;
             const { data, error } = await this.supabase
                 .from(this.options.tableName)
                 .insert(records)
@@ -565,23 +642,27 @@ export class DataObject<
                 this.handleError(`Error inserting records: ${error?.message ?? 'No data returned'}`);
                 return null;
             }
-            
-            const newRecord = data[0];
+
+            const rows = data as T[];
 
             if (setAsCurrent) {
-                this._currentRecord = newRecord;
+                this._preferredCurrentId = rows[0].id;
             }
-
-            this.lifeCycleEvents.emit('afterBulkInsert', data);
 
             await this.refresh();
 
+            const inserted = rows.map(r => this.getRecordById(r.id) ?? (r as DataObjectRecord<T>));
+
+            this.lifeCycleEvents.emit('afterBulkInsert', inserted);
+
             this.handleInfo(`${records.length} records inserted successfully`);
 
-            return newRecord;
+            return inserted[0];
         } catch (err) {
             this.handleError(`Error inserting records: ${err}`);
             return null;
+        } finally {
+            this.state.isInserting = false;
         }
     }
 
@@ -589,7 +670,8 @@ export class DataObject<
      * Updates multiple records in Supabase with the updates supplied.
      * @param ids - The ids of the records to update.
      * @param values - The values to update the records with.
-     * @param optimistic - Whether to optimistically update the records in the data object without refreshing after the update. Default is true.
+     * @param optimistic - Whether to update the records in place from the server response
+     * without refreshing the whole data object. Default is true.
      * @returns True if update was successful, false otherwise.
      */
     async bulkUpdate(
@@ -597,7 +679,7 @@ export class DataObject<
         values: Partial<T>,
         optimistic = true
     ): Promise<boolean> {
-        if (this.state.isUpdating) return false;
+        if (ids.some(id => this._updatingIds.has(id))) return false;
         if (!this.options.canUpdate || !this.options.tableName) {
             this.handleWarning('Update operation is not allowed for this data object');
             return false;
@@ -605,30 +687,29 @@ export class DataObject<
 
         if (!ids.length) return false;
 
-        const idSet = new Set(ids);
-        const records = this.data.filter(x => idSet.has(x.id));
+        const records: DataObjectRecord<T>[] = [];
+        for (const id of ids) {
+            const record = this.getRecordById(id);
+            if (record) records.push(record);
+        }
 
         if (records.length !== ids.length) {
             this.handleWarning('Some records not found');
             return false;
         }
 
-        const updateToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { updateToken.cancelEvent = true; },
-            cancelEvent: false,
-        };
+        const updateToken = this.createCancelToken();
 
         this.lifeCycleEvents.emit('beforeBulkUpdate', updateToken, records, values);
         if (updateToken.cancelEvent) return false;
 
+        this.markBusy(this._updatingIds, ids);
         try {
-            this.state.isUpdating = true;
-
-            const { error } = await this.supabase
+            const { data, error } = await this.supabase
                 .from(this.options.tableName)
                 .update(values)
-                .in('id', ids);
+                .in('id', ids)
+                .select();
 
             if (error) {
                 this.handleError(`Error updating records: ${error.message}`);
@@ -636,11 +717,16 @@ export class DataObject<
             }
 
             if (optimistic) {
-                this.data = this.data.map(record =>
-                    idSet.has(record.id)
-                        ? { ...record, ...values }
-                        : record
-                    );
+                // Merge server-confirmed rows (or the sent values if RLS hides them) into the
+                // existing DataRecords so they keep their methods, other columns and pending edits.
+                const serverRows = new Map<unknown, Partial<T>>();
+                for (const row of (data ?? []) as T[]) serverRows.set(row.id, row);
+                const valueKeys = new Set(Object.keys(values));
+                for (const record of records) {
+                    record.mergeServerValues(serverRows.get(record.id) ?? values, valueKeys);
+                }
+                this.applyGrouping();
+                this.eventEmitter.fire(this.data);
             } else {
                 await this.refresh();
             }
@@ -653,7 +739,7 @@ export class DataObject<
             this.handleError(`Error updating records: ${error}`);
             return false;
         } finally {
-            this.state.isUpdating = false;
+            this.markIdle(this._updatingIds, ids);
         }
     }
 
@@ -663,7 +749,7 @@ export class DataObject<
      * @returns true if delete was successful, false otherwise.
      */
     async bulkDelete(ids: (T["id"])[]): Promise<boolean> {
-        if (this.state.isDeleting) { return false; }
+        if (ids.some(id => this._deletingIds.has(id))) { return false; }
         if (!this.options.canDelete || !this.options.tableName) {
             this.handleWarning('Delete operation is not allowed for this data object');
             return false;
@@ -671,20 +757,19 @@ export class DataObject<
 
         if (!ids.length) return false;
 
-        const idSet = new Set(ids);
-        const records = this.data.filter(x => idSet.has(x.id));
+        const records: DataObjectRecord<T>[] = [];
+        for (const id of ids) {
+            const record = this.getRecordById(id);
+            if (record) records.push(record);
+        }
 
-        const deleteToken: DataObjectCancelableEvent & DataObjectOptions<T> = {
-            ...this.options,
-            cancel: () => { deleteToken.cancelEvent = true; }, 
-            cancelEvent: false,
-        };
+        const deleteToken = this.createCancelToken();
 
         this.lifeCycleEvents.emit('beforeBulkDelete', deleteToken, records);
         if (deleteToken.cancelEvent) { return false; }
 
+        this.markBusy(this._deletingIds, ids);
         try {
-            this.state.isDeleting = true;
             const { error } = await this.supabase
                 .from(this.options.tableName)
                 .delete()
@@ -704,41 +789,53 @@ export class DataObject<
             this.handleError(`Error deleting records: ${error}`);
             return false;
         } finally {
-            this.state.isDeleting = false;
+            this.markIdle(this._deletingIds, ids);
         }
     }
 
     // #end region
 
     /**
-     * Saves all pending changes in parallel to Supabase using the update() method, then refreshes data object.
+     * Saves all pending changes in parallel to Supabase, then refreshes the data object.
      * Can only be done if a tableName is specified and canUpdate is true.
+     * If any record fails to save, the data object is NOT refreshed, so the failed records
+     * keep their pending changes and can be retried.
+     * @returns true if every changed record was saved.
      */
-    public async saveChanges(): Promise<void> {
-        if (this.changedRecords.length == 0) {
+    public async saveChanges(): Promise<boolean> {
+        const changed = this.changedRecords;
+        if (changed.length == 0) {
             this.handleInfo("No changes to save.");
-            return;
+            return true;
         }
 
         if (!this.options.canUpdate || !this.options.tableName) {
             this.handleWarning('Update operation is not allowed for this data object.');
-            return;
+            return false;
         }
 
-        const changed = this.changedRecords;
+        const saved: DataObjectRecord<T>[] = [];
+        const failed: DataObjectRecord<T>[] = [];
 
         try {
             this.state.isSaving = true;
-            await Promise.all(changed.map(r => r.save()));
+            const results = await Promise.all(changed.map(r => r.save().catch(() => false)));
+            results.forEach((ok, i) => (ok ? saved : failed).push(changed[i]));
 
-            await this.refresh();
-
-            this.handleInfo("All changes saved successfully.");
+            if (failed.length === 0) {
+                await this.refresh();
+                this.handleInfo("All changes saved successfully.");
+            } else {
+                this.handleError(`Saved ${saved.length} of ${changed.length} records. Failed ids: ${failed.map(r => String(r.id)).join(', ')}`);
+            }
         } catch (error) {
             this.handleError(`Error saving changes: ${error}`);
         } finally {
             this.state.isSaving = false;
         }
+
+        this.lifeCycleEvents.emit('afterSaveChanges', saved, failed);
+        return failed.length === 0;
     }
 
     /**
@@ -764,127 +861,31 @@ export class DataObject<
 
     /**
      * Helper function to wrap data object records in a reactive proxy and listen for changes.
-     * @param record - DataObjectRecord to create proxy for
+     * @param raw - Raw row to wrap
+     * @param index - Position of the record in `data`
      * @returns Proxy of DataObjectRecord passed through
      */
-    private createReactiveRecord(raw: T): DataObjectRecord<T> {
+    private createReactiveRecord(raw: T, index: number): DataObjectRecord<T> {
         const record = new DataRecord<T>(
-            this.data.length,
+            index,
             this._fields,
             raw,
             this,
-            (rec, field) => {
+            // User edit (or revert): track change, make it current, notify.
+            (rec) => {
                 this.lifeCycleEvents.emit('fieldChanged', record, rec.changes);
                 this.currentRecord = record;
+                this.eventEmitter.fire(this.data);
+            },
+            // Server sync (record.refresh()): notify without changing the current record.
+            (_rec, changed) => {
+                this.lifeCycleEvents.emit('fieldChanged', record, changed);
+                if (this.hasGroupBy) this.applyGrouping();
                 this.eventEmitter.fire(this.data);
             }
         ) as DataObjectRecord<T>;
 
         return record;
-    }
-
-    /** Builds the select query for fetching data from Supabase. */
-    private buildQuery(): any {
-        // Start with base query
-        let query: any = this.supabase.from(this.options.viewName);
-
-        // Apply select fields and relationships
-        const selections: string[] = [];
-
-        if (this.options.fields && this.options.fields.length > 0) {
-            this._fields = this.options.fields;
-
-            selections.push(
-                this.options.fields
-                    .map(f => String(f.name))
-                    .join(",")
-            );
-        } else {
-            selections.push("*");
-        }
-
-        if (this.options.relationships?.length) {
-            selections.push(
-                this.buildRelationshipSelect(
-                    this.options.relationships
-                )
-            );
-        }
-
-        query = query.select(selections.join(","));
-
-        // Apply where clauses
-        if (this.options.whereClauses) {
-            for (const whereClause of this.options.whereClauses) {
-                switch (whereClause.operator) {
-                    case 'equals':
-                        query = query.eq(whereClause.field, whereClause.value);
-                        break;
-                    case 'notequals':
-                        query = query.neq(whereClause.field, whereClause.value);
-                        break;
-                    case 'greaterthan':
-                        query = query.gt(whereClause.field, whereClause.value);
-                        break;
-                    case 'lessthan':
-                        query = query.lt(whereClause.field, whereClause.value);
-                        break;
-                        case 'isnull':
-                        query = query.is(whereClause.field, null);
-                        break;
-                    case 'isnotnull':
-                        query = query.not(whereClause.field, 'is', null);
-                        break;
-                    case 'like':
-                        query = query.like(whereClause.field, `%${whereClause.value}%`);
-                        break;
-                    case 'ilike':
-                        query = query.ilike(whereClause.field, `%${whereClause.value}%`);
-                        break;
-                    case 'in':
-                        query = query.in(whereClause.field, whereClause.value as any[]);
-                        break;
-                    case 'notin':
-                        const values = whereClause.value as (string | number)[];
-                        const formattedValues = values
-                            .map(value => typeof value === 'string' ? `"${value.replace(/"/g, '\\"')}"` : value)
-                            .join(',');
-
-                        query = query.not(whereClause.field, 'in', `(${formattedValues})`);
-                        break;
-                }
-            }
-        }
-        
-        // Apply master binding where clause if it exists
-        if (this.masterBinding) {
-            const bindingWhereClause = this.masterBinding.bindingWhereClause;
-            if (!bindingWhereClause || bindingWhereClause.value === undefined || bindingWhereClause.value === null) {
-                this.data = [];
-                this.currentRecord = undefined;
-                this.state.isReady = true;
-                this.lifeCycleEvents.emit('afterLoad', this.data);
-
-                throw new Error('Master binding value is undefined or null, cannot build select query.');
-            }
-
-            query = query.eq(bindingWhereClause.field, bindingWhereClause.value);
-        }
-
-        // Apply sorting
-        if (this.options.sort) {
-            const sortArray = this.normalizeSort(this.options.sort);
-            for (const sort of sortArray) {
-                query = query.order(sort.field as string, { ascending: sort.direction === 'asc' });
-            }
-        }
-
-        // Apply record limit
-        if (this.options.recordLimit) {
-            query = query.limit(this.options.recordLimit);
-        }
-
-        return query;
     }
 
     /**
@@ -913,18 +914,29 @@ export class DataObject<
     }
 
     /**
-     * Infers data objects fields to be added to fields array.
-     * If no fields have been provided in DataObjectOptions then all fields from the provided table will be used. 
+     * Infers data objects fields with a separate `select * limit 1` request.
+     * Only used when fields can't be taken from a normal load (autoRefresh: false, empty result).
      */
     private async inferFields(): Promise<void> {
         if (this.options.fields && this.options.fields.length > 0) {
             this._fields = this.options.fields;
-        } else {
-            const { data } = await this.supabase.from(this.options.viewName).select('*').limit(1);
-            if (data && data.length > 0) {
-                this._fields = Object.keys(data[0]).map(key => ({ name: key, type: undefined }));
-            }
+            return;
         }
+        try {
+            const { data } = await this.supabase.from(this.options.viewName).select('*').limit(1);
+            this.inferFieldsFromRow(data?.[0]);
+        } catch {
+            // ignore: fields stay empty, as before
+        }
+    }
+
+    /** Infers fields from a loaded row (excluding relationship embeds), if not already known. */
+    private inferFieldsFromRow(row: T | undefined): void {
+        if (this._fields.length > 0 || !row) return;
+        const embeds = relationshipKeys(this.options.relationships);
+        this._fields = Object.keys(row)
+            .filter(key => !embeds.has(key))
+            .map(key => ({ name: key as keyof T, type: undefined }));
     }
 
     /**
@@ -942,46 +954,6 @@ export class DataObject<
             canDelete: options.tableName ? (options.canDelete ?? false) : false,
             autoRefresh: options.autoRefresh ?? true
         };
-    }
-
-    /**
-     * Builds the select string for the relationships defined in the data object options.
-     * @param relationships - Array of RelationshipConfig objects to build the select string for.
-     * @returns The built select string.
-     */
-    private buildRelationshipSelect(relationships: RelationshipConfig[]): string {
-        return relationships
-            .map((relationship) => {
-                let relationshipName = relationship.name;
-
-                if (relationship.alias) {
-                    relationshipName = `${relationship.alias}:${relationshipName}`;
-                }
-
-                if (relationship.foreignKey) {
-                    relationshipName += `!${relationship.foreignKey}`;
-                }
-
-                const fields = relationship.fields?.length
-                    ? relationship.fields.map(String)
-                    : ["*"];
-
-                const nestedRelationships = relationship.relationships?.length
-                    ? this.buildRelationshipSelect(
-                        relationship.relationships
-                    )
-                    : "";
-
-                const selections = [
-                    ...fields,
-                    nestedRelationships
-                ]
-                    .filter(Boolean)
-                    .join(",");
-
-                return `${relationshipName}(${selections})`;
-            })
-            .join(",");
     }
 
     /**
@@ -1005,12 +977,23 @@ export class DataObject<
     }
 
     /**
-     * Gets a record from DataObject's data array.
+     * Gets a record from DataObject's data array in O(1).
      * @param id - The id of the record to fetch.
      * @returns A DataObjectRecord if found, undefined if not.
      */
     public getRecordById(id: T["id"]): DataObjectRecord<T> | undefined {
-        return this.data.find(x => x.id === id);
+        // `data` is public and may have been replaced externally: rebuild the index if so.
+        if (this._indexedData !== this.data) {
+            this.rebuildIndex();
+        }
+        const record = this._recordsById.get(id);
+        if (record && this.data[record.index] === record) {
+            return record;
+        }
+        // Index miss or array mutated in place: fall back to a scan, then re-index.
+        const found = this.data.find(x => x.id === id);
+        if (found) this.rebuildIndex();
+        return found;
     }
 
     /**
@@ -1021,22 +1004,6 @@ export class DataObject<
         return [...this.data];
     }
 
-    private normalizeSort(
-        sort?: SortConfig<T> | SortConfig<T>[]
-    ): Required<SortConfig<T>>[] {
-        if (!sort) return [];
-
-        const arr = Array.isArray(sort) ? sort : [sort];
-
-        return arr
-            .map((s, index) => ({
-            field: s.field, 
-            direction: s.direction ?? 'asc',
-            order: s.order ?? index,
-            }))
-            .sort((a, b) => a.order - b.order);
-    }
- 
     /**
      * Helper method to dispose of a data object in order to prevent memory leaks.
      * Disposes of all child data objects and resets state to default.
@@ -1045,16 +1012,20 @@ export class DataObject<
         if (this.state.isDestroyed) return;
         this.state.isDestroyed = true;
 
+        // Cancel any in-flight load and make sure a late response can't repopulate data.
+        this._loadSeq++;
+        this._loadAbort?.abort();
+        this._loadAbort = undefined;
+        this._currentLoad = undefined;
+
+        // Capture the master before the binding (which provides it) is torn down.
+        const master = this.masterDataObject;
         if (this.masterBinding) {
-            this.masterBinding?.dispose();
+            this.masterBinding.dispose();
             this.masterBinding = undefined;
         }
+        master?.unregisterChildDataObject(this);
 
-        if (this.masterDataObject) {
-            this.masterDataObject.unregisterChildDataObject(this);
-        }
-
-        this.masterDataObject?.unregisterChildDataObject(this);
         for (const child of this._childDataObjects) child.dispose();
         this._childDataObjects = [];
 
@@ -1063,8 +1034,12 @@ export class DataObject<
 
         this.data = [];
         this._currentRecord = undefined;
+        this._recordsById.clear();
+        this._indexedData = null;
+        this._groupedData = [];
 
         this.state.reset();
+        this.state.isDestroyed = true;
     }
 
     /**

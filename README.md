@@ -149,13 +149,23 @@ await refreshDataObject('myData');
 #### Methods
 
 - `getData()`: Get current data as an array
-- `refresh()`: Manually refresh data from Supabase
-- `insert(record)`: Insert a new record
-- `update(id, updates)`: Update an existing record
+- `getRecordById(id)`: Get a loaded record by id (O(1))
+- `refresh()`: Manually refresh data from Supabase. If called while a refresh is in flight, the older request is cancelled and the latest options win.
+- `insert(record, setAsCurrent?)`: Insert a new record. Returns the new record as it appears in `data`.
+- `update(id, updates, skipRefresh?)`: Update an existing record
 - `delete(id)`: Delete a record
+- `bulkInsert(records)`, `bulkUpdate(ids, values, optimistic?)`, `bulkDelete(ids)`: Bulk operations
+- `saveChanges()`: Save every record with pending edits. Resolves `true` when all were saved.
+- `cancelChanges()`: Revert every pending edit
 - `dispose()`: Clean up the data object
 - `onDataChanged(callback)`: Listen for data changes
-- `on('eventName', options)`: Data object 'on' events
+- `on('eventName', listener)` / `once(...)` / `off(...)`: Lifecycle events (`beforeLoad`, `afterLoad`, `beforeRefresh`, `afterRefresh`, `beforeInsert`, `afterInsert`, `beforeUpdate`, `afterUpdate`, `beforeDelete`, `afterDelete`, the `Bulk` variants, `fieldChanged`, `currentRecordChanged`, `afterSaveChanges`). Call `options.cancel()` in a `before*` listener to cancel the operation.
+
+#### Records
+
+Each item in `data` is a `DataRecord`: the row's columns plus `save()`, `revert()`, `refresh()`, `delete()`, `hasChanges` and `changes`.
+Assigning a column (`record.name = 'x'`) tracks it as a pending change. Records behave like plain objects:
+`Object.keys(record)`, `{ ...record }`, `'name' in record` and `JSON.stringify(record)` all work with the row's columns.
 
 #### Example
 
@@ -183,7 +193,7 @@ if (dataObject) {
     console.log('Data updated:', data);
   });
 
-  dataObject.lifeCycleEvents.on('beforeUpdate', (options, record, updates) => {
+  dataObject.on('beforeUpdate', (options, record, updates) => {
     if (record.status === 'locked') {
       options.cancelEvent = true;
     }
@@ -204,11 +214,16 @@ interface DataObjectOptions {
   tableName?: string;                  // Table name - required for CRUD operations
   fields?: DataObjectField[];          // Specific fields to select
   whereClauses?: WhereClause[];        // Filter conditions
-  sort?: SortConfig;                   // Sorting configuration
-  recordLimit?: number;                // Maximum records to fetch
+  sort?: SortConfig | SortConfig[];    // Sorting configuration (array = multi-column)
+  recordLimit?: number;                // Max records. Default 100; 0 = no client-side limit
   canInsert?: boolean;                 // Allow insert operations
   canUpdate?: boolean;                 // Allow update operations
   canDelete?: boolean;                 // Allow delete operations
+  masterDataObjectBinding?: MasterDataObjectBinding; // Bind to a master data object
+  autoRefresh?: boolean;               // Load on creation / when master refreshes (default true)
+  groupBy?: GroupByConfig;             // Client-side grouping + aggregates
+  relationships?: RelationshipConfig[]; // PostgREST embeds (alias, foreignKey, nested)
+  allowedBuckets?: string[];           // Storage buckets this object may upload to
 }
 ```
 
@@ -217,10 +232,33 @@ interface DataObjectOptions {
 ```typescript
 interface WhereClause {
   field: string;
-  operator: 'equals' | 'notequals' | 'greaterthan' | 'lessthan';
-  value: any;
+  operator: 'equals' | 'notequals' | 'greaterthan' | 'lessthan'
+          | 'isnull' | 'isnotnull' | 'like' | 'ilike' | 'in' | 'notin';
+  value?: any; // array for 'in' / 'notin', omitted for 'isnull' / 'isnotnull'
 }
 ```
+
+### Master / child binding
+
+```typescript
+await createDataObject('checklists', { viewName: 'checklists_view', tableName: 'checklists' });
+
+await createDataObject('items', {
+  viewName: 'checklist_items_view',
+  tableName: 'checklist_items',
+  canUpdate: true,
+  masterDataObjectBinding: {
+    masterDataObjectId: 'checklists',   // master must be created first
+    masterBindingField: 'id',
+    childBindingField: 'checklist_id',
+    // Re-fetch the master's current record after this child inserts/updates/deletes,
+    // so values the master's view derives from its children (counts, totals) stay current.
+    refreshMasterOnChange: true          // default false
+  }
+});
+```
+
+The child reloads whenever the master's `currentRecord` changes. If you switch quickly, only the last selection's rows are applied.
 
 ### SortConfig
 

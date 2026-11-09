@@ -1,6 +1,12 @@
 import { DataObject, DataObjectErrorHandler } from "./dataObject";
 import type { MasterDataObjectBinding, WhereClause, DataRecordKey } from "./types";
 
+/** Child events that mean the child's rows changed on the server. */
+const CHILD_CHANGE_EVENTS = [
+    'afterInsert', 'afterUpdate', 'afterDelete',
+    'afterBulkInsert', 'afterBulkUpdate', 'afterBulkDelete',
+] as const;
+
 export class MasterBinding<
     TMaster extends DataRecordKey,
     TChild extends DataRecordKey
@@ -8,9 +14,14 @@ export class MasterBinding<
     private _masterDataObject!: DataObject<TMaster>;
     private _childDataObject: DataObject<TChild>;
     private _bindingDef: MasterDataObjectBinding<TChild>;
-    private _masterDataChangeListener!: (() => void);
     private _bindingWhereClause?: WhereClause<TChild>;
     private _errorHandler?: DataObjectErrorHandler;
+
+    /** Unsubscribe functions for every listener this binding registers (master + child). */
+    private _unsubscribers: Array<() => void> = [];
+
+    private _masterRefreshTimer?: ReturnType<typeof setTimeout>;
+    private _masterRefreshPendingAfterSave = false;
 
     public get bindingDefinition(): MasterDataObjectBinding<TChild> {
         return this._bindingDef;
@@ -39,7 +50,7 @@ export class MasterBinding<
             const masterDataObject = await this.getMasterDataObjectFromManager(
                 this._bindingDef.masterDataObjectId
             ) as DataObject<TMaster> | null;
-            
+
             if (!masterDataObject) {
                 if (this._errorHandler?.onWarning) {
                     this._errorHandler?.onWarning(`Data object ${this._bindingDef.masterDataObjectId} does not exist. Cannot complete master binding.`);
@@ -59,6 +70,7 @@ export class MasterBinding<
 
             this.addMasterBindingWhereClause();
             this.setupMasterDataChangeListener();
+            this.setupChildChangeListener();
 
             this._masterDataObject.registerChildDataObject(this._childDataObject);
 
@@ -68,7 +80,7 @@ export class MasterBinding<
         } catch (error) {
             // Silently fail as requested
             if (this._errorHandler?.onError) {
-                this._errorHandler?.onError(`Failed to setup master data object binding: ${error}`) 
+                this._errorHandler?.onError(`Failed to setup master data object binding: ${error}`)
             }
             return;
         }
@@ -86,17 +98,19 @@ export class MasterBinding<
     }
 
     /**
-     * Check if child and master binding field exists in respective fields
-     * @returns true if both fields were found, false otherwise.
+     * Check if child and master binding field exists in respective fields.
+     * A side whose fields aren't known yet (no explicit `fields` and nothing loaded) is not
+     * rejected: a wrong field name then surfaces as a clear PostgREST error on load.
+     * @returns true if both fields were found (or can't be checked yet), false otherwise.
      */
     private validateBindingFields(): boolean {
-        const childFieldExists = this._childDataObject.fields.some(field => field.name === this._bindingDef.childBindingField);
-        if (!childFieldExists) {
+        const childFields = this._childDataObject.fields;
+        if (childFields.length > 0 && !childFields.some(field => field.name === this._bindingDef.childBindingField)) {
             return false;
         }
 
-        const masterFieldExists = this._masterDataObject.fields.some(field => field.name === this._bindingDef.masterBindingField);
-        if (!masterFieldExists) {
+        const masterFields = this._masterDataObject.fields;
+        if (masterFields.length > 0 && !masterFields.some(field => field.name === this._bindingDef.masterBindingField)) {
             return false;
         }
 
@@ -146,16 +160,65 @@ export class MasterBinding<
             return;
         }
 
-        this._masterDataChangeListener = () => {
-            this.onMasterDataChanged();
-        };
+        this._unsubscribers.push(
+            this._masterDataObject.on('currentRecordChanged', () => this.onMasterDataChanged())
+        );
 
-        this._masterDataObject.on('currentRecordChanged', this._masterDataChangeListener);
-        this._masterDataObject.on('afterRefresh', () => {
-            if (this._childDataObject.options.autoRefresh) {
-                this._childDataObject.refresh();
-            }
-        });
+        this._unsubscribers.push(
+            this._masterDataObject.on('afterRefresh', () => {
+                const child = this._childDataObject;
+                if (!child.options.autoRefresh || child.state.isDestroyed) return;
+                // If the master's current record changed during this refresh, the master has
+                // already started a child refresh with the new binding value; don't start a
+                // second, redundant one.
+                if (child.state.isRefreshing) return;
+                child.refresh();
+            })
+        );
+    }
+
+    /**
+     * When `refreshMasterOnChange` is set, re-fetch the master's current record after the
+     * child changes data, so values the master derives from its children stay in sync.
+     */
+    private setupChildChangeListener(): void {
+        if (!this._bindingDef.refreshMasterOnChange) return;
+
+        const child = this._childDataObject;
+        for (const evt of CHILD_CHANGE_EVENTS) {
+            this._unsubscribers.push(
+                child.on(evt as any, () => {
+                    // During saveChanges() wait for the single afterSaveChanges event instead
+                    // of re-fetching the master once per saved record.
+                    if (child.state.isSaving) {
+                        this._masterRefreshPendingAfterSave = true;
+                        return;
+                    }
+                    this.scheduleMasterRecordRefresh();
+                })
+            );
+        }
+        this._unsubscribers.push(
+            child.on('afterSaveChanges', () => {
+                if (this._masterRefreshPendingAfterSave) {
+                    this._masterRefreshPendingAfterSave = false;
+                    this.scheduleMasterRecordRefresh();
+                }
+            })
+        );
+    }
+
+    /** Coalesces bursts of child changes (same task) into one master record fetch. */
+    private scheduleMasterRecordRefresh(): void {
+        if (this._masterRefreshTimer !== undefined) return;
+        this._masterRefreshTimer = setTimeout(() => {
+            this._masterRefreshTimer = undefined;
+            const master = this._masterDataObject;
+            const id = master?.currentRecord?.id;
+            if (!master || master.state.isDestroyed || id === undefined) return;
+            // DataRecord.refresh() coalesces overlapping calls itself.
+            master.refreshRecordById(id);
+        }, 0);
     }
 
     /**
@@ -167,11 +230,14 @@ export class MasterBinding<
     }
 
     public dispose(): void {
-        if (this._masterDataObject && this._masterDataChangeListener) {
-            this._masterDataObject.off('currentRecordChanged', this._masterDataChangeListener);
+        for (const unsubscribe of this._unsubscribers) unsubscribe();
+        this._unsubscribers = [];
+
+        if (this._masterRefreshTimer !== undefined) {
+            clearTimeout(this._masterRefreshTimer);
+            this._masterRefreshTimer = undefined;
         }
 
         this._bindingWhereClause = undefined;
-        this._masterDataChangeListener = undefined!;
     }
 }

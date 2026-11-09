@@ -2,7 +2,8 @@
 
 // Core classes
 export { DataObject, createDataObject as createDataObjectDirect } from './dataObject';
-export { DataObjectManager, DataObjectManagerConfig } from './dataObjectManager';
+export { DataObjectManager } from './dataObjectManager';
+export type { DataObjectManagerConfig } from './dataObjectManager';
 export { EventEmitter } from './eventEmitter';
 
 // Global convenience functions
@@ -26,13 +27,21 @@ export type {
     DataObjectRecord,
     NamedDataObjectOptions,
     StoredDataObject,
-    MasterDataObjectBinding
+    MasterDataObjectBinding,
+    DataRecordKey,
+    GroupByConfig,
+    RelationshipConfig,
+    DataObjectEvents,
+    DataObjectCancelableEvent
 } from './types';
 
 export type { DataObjectErrorHandler } from './dataObject';
+export type { DataRecord } from './dataRecord';
+export type { DataObjectState } from './dataObjectState';
+export type { DataObjectGroup } from './grouping';
 
 // Utility functions for initialization
-import { DataObjectManager, DataObjectManagerConfig } from './dataObjectManager';
+import { DataObjectManager, type DataObjectManagerConfig } from './dataObjectManager';
 
 export function initializeDataObjectManager(config: DataObjectManagerConfig): DataObjectManager {
     return DataObjectManager.getInstance(config);

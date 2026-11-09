@@ -97,6 +97,15 @@ export interface MasterDataObjectBinding<
     masterDataObjectId: string;
     masterBindingField: string;
     childBindingField: keyof TChild;
+    /**
+     * When true, the master's current record is re-fetched from Supabase after this child
+     * inserts, updates or deletes records (including bulk operations and saveChanges()).
+     * Use this when the master's view exposes values derived from its children
+     * (e.g. `checked_items_count`, totals, `updated_at` set by triggers).
+     * Costs one single-row request per change (coalesced for bursts/saveChanges()).
+     * @default false
+     */
+    refreshMasterOnChange?: boolean;
 }
 
 /* ============================= */
@@ -138,8 +147,10 @@ export interface DataObjectOptions<T extends DataRecordKey> {
     whereClauses?: WhereClause<T>[];
     /** Sorting to be applied to the returned data based on specified field and direction. */
     sort?: SortConfig<T> | SortConfig<T>[];
-    /** When specified, will only return the first x amount of records.
-     * Leave blank to return all records.
+    /** Maximum number of records to return.
+     * Leave blank to use the default of 100. Set to 0 to apply no client-side limit
+     * (the Supabase project's "max rows" setting, 1000 by default, still applies).
+     * @default 100
      */
     recordLimit?: number;
     /** Controls whether or not the data object can be inserted into.
@@ -234,6 +245,9 @@ export type DataObjectEvents<T extends DataRecordKey> = {
 
     beforeBulkDelete: [options: DataObjectCancelableEvent & DataObjectOptions<T>, records: DataObjectRecord<T>[]];
     afterBulkDelete: [ids: T["id"][]];
+
+    /** Fired once after saveChanges() completes. `records` are the records that were saved successfully. */
+    afterSaveChanges: [records: DataObjectRecord<T>[], failed: DataObjectRecord<T>[]];
 }
 
 export interface DataObjectCancelableEvent {

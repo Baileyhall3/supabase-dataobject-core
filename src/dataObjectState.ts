@@ -39,5 +39,6 @@ export class DataObjectState {
         this.isSaving = false
         this.isDestroyed = false;
         this.isInserting = false;
+        this.isDeleting = false;
     }
 }

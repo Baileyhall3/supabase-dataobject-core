@@ -92,5 +92,11 @@ jspm_packages/
 # TernJS port file
 .tern-port
 
-# Test app
-test-app/
+# Sandbox
+sandbox/
+
+# Markdown
+*.md
+
+# Claude
+claude/

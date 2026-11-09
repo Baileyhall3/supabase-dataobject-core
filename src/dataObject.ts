@@ -19,6 +19,7 @@ import { DataObjectStorage } from './dataObjectStorage';
 import { DataRecord } from './dataRecord';
 import { buildSelectQuery, relationshipKeys } from './queryBuilder';
 import { groupRecords, DataObjectGroup } from './grouping';
+import { ReactiveSignal } from './reactivity';
 
 export interface DataObjectErrorHandler {
     onError?: (error: string) => void;
@@ -35,7 +36,24 @@ export class DataObject<
     private _name: string;
     private _readyPromise: Promise<void>;
 
-    public data: DataObjectRecord<T>[] = [];
+    private _data: DataObjectRecord<T>[] = [];
+
+    /**
+     * Observability hook for UI frameworks (see `makeReactive`). Tracked by `data`, `currentRecord`,
+     * `fields` and `groupedData`; triggered when any of those are replaced. Column-level changes are
+     * tracked per record by DataRecord.
+     */
+    private _signal: ReactiveSignal;
+
+    public get data(): DataObjectRecord<T>[] {
+        this._signal.track();
+        return this._data;
+    }
+
+    public set data(records: DataObjectRecord<T>[]) {
+        this._data = records;
+        this._signal.trigger();
+    }
 
     private eventEmitter = new EventEmitter<DataObjectRecord<T>[]>();
     public readonly onDataChanged = this.eventEmitter.event;
@@ -83,6 +101,7 @@ export class DataObject<
     }
 
     public get currentRecord(): DataObjectRecord<T> | undefined {
+        this._signal.track();
         return this._currentRecord;
     }
 
@@ -91,6 +110,7 @@ export class DataObject<
     }
 
     public get fields(): DataObjectField<T>[] {
+        this._signal.track();
         return this._fields;
     }
 
@@ -132,6 +152,7 @@ export class DataObject<
     }
 
     public get groupedData() {
+        this._signal.track();
         return this._groupedData;
     }
 
@@ -146,10 +167,11 @@ export class DataObject<
         errorHandler?: DataObjectErrorHandler
     ) {
         this.supabase = supabase;
+        this._signal = new ReactiveSignal(options.makeReactive);
         this._options = this.setDefaultOptions(options);
         this.errorHandler = errorHandler;
         this._name = name;
-        this.state = new DataObjectState();
+        this.state = new DataObjectState(options.makeReactive);
         this.storage = new DataObjectStorage(
             name,
             this.supabase.storage,
@@ -265,8 +287,8 @@ export class DataObject<
             // Bound child with no master value (e.g. master has no rows): nothing to load.
             if (this.masterBinding && !this.hasBindingValue()) {
                 this.setData([]);
-                this.eventEmitter.fire(this.data);
-                this.lifeCycleEvents.emit('afterLoad', this.data);
+                this.eventEmitter.fire(this._data);
+                this.lifeCycleEvents.emit('afterLoad', this._data);
                 return true;
             }
 
@@ -295,8 +317,8 @@ export class DataObject<
             this.inferFieldsFromRow(rawData[0]);
             this.setData(rawData);
 
-            this.eventEmitter.fire(this.data);
-            this.lifeCycleEvents.emit('afterLoad', this.data);
+            this.eventEmitter.fire(this._data);
+            this.lifeCycleEvents.emit('afterLoad', this._data);
             return true;
         } catch (error) {
             if (superseded()) {
@@ -327,7 +349,8 @@ export class DataObject<
         for (let i = 0; i < rawData.length; i++) {
             records[i] = this.createReactiveRecord(rawData[i], i);
         }
-        this.data = records;
+        this._data = records;
+        this._signal.trigger();
         this.rebuildIndex();
         this.applyGrouping();
 
@@ -342,10 +365,10 @@ export class DataObject<
 
     private rebuildIndex(): void {
         this._recordsById.clear();
-        for (const record of this.data) {
+        for (const record of this._data) {
             this._recordsById.set(record.id, record);
         }
-        this._indexedData = this.data;
+        this._indexedData = this._data;
     }
 
     /**
@@ -356,16 +379,20 @@ export class DataObject<
      */
     private setCurrentRecord(record: DataObjectRecord<T> | undefined, fireDataChanged: boolean): void {
         if (this._currentRecord?.id === record?.id) {
-            this._currentRecord = record;
+            if (this._currentRecord !== record) {
+                this._currentRecord = record;
+                this._signal.trigger();
+            }
             return;
         }
 
         const previousRecord = this._currentRecord;
         this._currentRecord = record;
+        this._signal.trigger();
 
         this.lifeCycleEvents.emit('currentRecordChanged', previousRecord, record);
         if (fireDataChanged) {
-            this.eventEmitter.fire(this.data);
+            this.eventEmitter.fire(this._data);
         }
 
         for (const child of this._childDataObjects) {
@@ -391,7 +418,7 @@ export class DataObject<
             const applied = await this.loadData();
 
             if (applied) {
-                this.lifeCycleEvents.emit('afterRefresh', this.data);
+                this.lifeCycleEvents.emit('afterRefresh', this._data);
             }
         } catch (err) {
             this.handleError(`Error refreshing data object ${this.name}: ${err}`);
@@ -431,7 +458,8 @@ export class DataObject<
 
     //** Apply groupBy to the data returned from loadData() and populate groupedData. */
     private applyGrouping(): void {
-        this._groupedData = groupRecords(this.data, this.options.groupBy, (m) => this.handleWarning(m));
+        this._groupedData = groupRecords(this._data, this.options.groupBy, (m) => this.handleWarning(m));
+        this._signal.trigger();
     }
 
     // #region CRUD
@@ -533,7 +561,7 @@ export class DataObject<
 
             if (skipRefresh) {
                 record.commitSaved(updates, data as Partial<T> | null);
-                this.eventEmitter.fire(this.data);
+                this.eventEmitter.fire(this._data);
             } else {
                 await this.refresh();
             }
@@ -726,7 +754,7 @@ export class DataObject<
                     record.mergeServerValues(serverRows.get(record.id) ?? values, valueKeys);
                 }
                 this.applyGrouping();
-                this.eventEmitter.fire(this.data);
+                this.eventEmitter.fire(this._data);
             } else {
                 await this.refresh();
             }
@@ -846,12 +874,12 @@ export class DataObject<
             this.handleInfo("No changes to revert.");
             return;
         }
-        for (const record of this.data) {
+        for (const record of this._data) {
             if (record.hasChanges) {
                 record.revert();
             }
         }
-        this.eventEmitter.fire(this.data);
+        this.eventEmitter.fire(this._data);
         this.handleInfo("All changes reverted.");
     }
 
@@ -875,13 +903,13 @@ export class DataObject<
             (rec) => {
                 this.lifeCycleEvents.emit('fieldChanged', record, rec.changes);
                 this.currentRecord = record;
-                this.eventEmitter.fire(this.data);
+                this.eventEmitter.fire(this._data);
             },
             // Server sync (record.refresh()): notify without changing the current record.
             (_rec, changed) => {
                 this.lifeCycleEvents.emit('fieldChanged', record, changed);
                 if (this.hasGroupBy) this.applyGrouping();
-                this.eventEmitter.fire(this.data);
+                this.eventEmitter.fire(this._data);
             }
         ) as DataObjectRecord<T>;
 
@@ -937,6 +965,7 @@ export class DataObject<
         this._fields = Object.keys(row)
             .filter(key => !embeds.has(key))
             .map(key => ({ name: key as keyof T, type: undefined }));
+        this._signal.trigger();
     }
 
     /**
@@ -983,15 +1012,15 @@ export class DataObject<
      */
     public getRecordById(id: T["id"]): DataObjectRecord<T> | undefined {
         // `data` is public and may have been replaced externally: rebuild the index if so.
-        if (this._indexedData !== this.data) {
+        if (this._indexedData !== this._data) {
             this.rebuildIndex();
         }
         const record = this._recordsById.get(id);
-        if (record && this.data[record.index] === record) {
+        if (record && this._data[record.index] === record) {
             return record;
         }
         // Index miss or array mutated in place: fall back to a scan, then re-index.
-        const found = this.data.find(x => x.id === id);
+        const found = this._data.find(x => x.id === id);
         if (found) this.rebuildIndex();
         return found;
     }
@@ -1001,7 +1030,7 @@ export class DataObject<
      * @returns an array of DataObjectRecords
      */
     public getData(): DataObjectRecord<T>[] {
-        return [...this.data];
+        return [...this._data];
     }
 
     /**
@@ -1032,11 +1061,12 @@ export class DataObject<
         this.eventEmitter.dispose();
         this.lifeCycleEvents.clearAll();
 
-        this.data = [];
+        this._data = [];
         this._currentRecord = undefined;
         this._recordsById.clear();
         this._indexedData = null;
         this._groupedData = [];
+        this._signal.trigger();
 
         this.state.reset();
         this.state.isDestroyed = true;

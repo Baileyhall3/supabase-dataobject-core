@@ -1,5 +1,6 @@
 import { DataObject } from "./dataObject";
 import { DataObjectField } from "./types";
+import { ReactiveSignal } from "./reactivity";
 
 /**
  * Copies a row so `_original` is independent of `_record`.
@@ -37,6 +38,9 @@ export class DataRecord<T extends { id: unknown }> {
 
     private _record: T;
 
+    /** Observability hook for UI frameworks (see `makeReactive`): tracked on every read, triggered on every change. */
+    private _signal: ReactiveSignal;
+
     // NB: every internal field MUST be initialised (even to undefined). Uninitialised fields
     // aren't emitted, so assigning them later through the Proxy would be treated as a column edit.
     private _savePromise: Promise<boolean> | undefined = undefined;
@@ -70,6 +74,7 @@ export class DataRecord<T extends { id: unknown }> {
         onServerSync?: (record: DataRecord<T>, changed: Partial<T>) => void
     ) {
         this._record = rawRecord;
+        this._signal = new ReactiveSignal(dataObject.options?.makeReactive);
         this.index = index;
         this.fields = fields;
         this._onFieldChanged = onFieldChanged;
@@ -80,6 +85,8 @@ export class DataRecord<T extends { id: unknown }> {
 
         const handler: ProxyHandler<this> = {
             get: (target, prop, receiver) => {
+                if (typeof prop === "string") target._signal.track();
+
                 if (Reflect.has(target, prop)) {
                     return Reflect.get(target, prop, receiver);
                 }
@@ -108,6 +115,7 @@ export class DataRecord<T extends { id: unknown }> {
                             target._pendingChanges[key] = value;
                         }
 
+                        target._signal.trigger();
                         target._onFieldChanged?.(target as DataRecord<T>, key);
                     }
 
@@ -127,7 +135,10 @@ export class DataRecord<T extends { id: unknown }> {
                 return Reflect.has(target, prop);
             },
 
-            ownKeys: (target) => Reflect.ownKeys(target._record as object),
+            ownKeys: (target) => {
+                target._signal.track();
+                return Reflect.ownKeys(target._record as object);
+            },
 
             getOwnPropertyDescriptor: (target, prop) => {
                 if (typeof prop === 'string' && Object.prototype.hasOwnProperty.call(target._record, prop)) {
@@ -209,6 +220,7 @@ export class DataRecord<T extends { id: unknown }> {
 
     private clearChanges() {
         this._pendingChanges = {};
+        this._signal.trigger();
     }
 
     /**
@@ -252,6 +264,7 @@ export class DataRecord<T extends { id: unknown }> {
                 delete this._pendingChanges[key];
             }
         }
+        this._signal.trigger();
     }
 
     /**
@@ -273,6 +286,7 @@ export class DataRecord<T extends { id: unknown }> {
             this._record[key] = v;
             delete this._pendingChanges[key];
         }
+        this._signal.trigger();
         return changed;
     }
 

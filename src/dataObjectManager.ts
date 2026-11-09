@@ -1,6 +1,7 @@
 import { DataObject, DataObjectErrorHandler } from './dataObject';
 import type { DataObjectOptions, SupabaseConfig, StoredDataObject, DataRecordKey } from './types';
 import { EventEmitter } from './eventEmitter';
+import type { MakeReactive } from './reactivity';
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
@@ -8,6 +9,14 @@ export interface DataObjectManagerConfig {
     supabaseConfig?: SupabaseConfig;
     supabaseClient?: SupabaseClient;
     errorHandler?: DataObjectErrorHandler;
+    /**
+     * Optional: your UI framework's "make observable" function, e.g. Vue's `reactive`.
+     * When set, `data`, `currentRecord`, `state.*`, `groupedData`, `hasChanges` and every record
+     * column update templates/computeds automatically, without extra listeners or wrappers.
+     * The library never imports a framework itself.
+     * @example initializeDataObjectManager({ supabaseConfig, makeReactive: reactive })
+     */
+    makeReactive?: MakeReactive;
 }
 
 export class DataObjectManager {
@@ -75,9 +84,14 @@ export class DataObjectManager {
                 }
             }
 
+            // Per-object option wins (including `false`); otherwise use the manager default.
+            const resolvedOptions = options.makeReactive === undefined && this.config.makeReactive
+                ? { ...options, makeReactive: this.config.makeReactive }
+                : options;
+
             const dataObject = new DataObject<T>(
                 this.supabase, 
-                options, 
+                resolvedOptions, 
                 name,
                 this.config.errorHandler,
             );

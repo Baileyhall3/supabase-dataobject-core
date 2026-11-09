@@ -1,4 +1,5 @@
 import { DataRecord } from "./dataRecord";
+import type { MakeReactive } from "./reactivity";
 
 /* ============================= */
 /* Base Record Constraint        */
@@ -188,6 +189,16 @@ export interface DataObjectOptions<T extends DataRecordKey> {
      * using Supabase/PostgREST relationship definitions.
      */
     relationships?: RelationshipConfig[];
+    /** Makes this data object observable by a UI framework, e.g. Vue's `reactive`.
+     * Overrides the manager-level `makeReactive`. Usually set once on `initializeDataObjectManager` instead.
+     *
+     * Passing `false` opts this object out (pre-2.5 behaviour). Only do this for objects that are **not bound
+     * directly in templates**, e.g. large lookups used in code. Data still loads and updates correctly, but
+     * the UI is not told about server-side changes (refresh, save results, `refreshMasterOnChange`). Templates
+     * then only update on the next unrelated re-render, so they appear "one change behind".
+     * Use `onDataChanged` / `on(...)` to drive the UI for such objects.
+     */
+    makeReactive?: MakeReactive | false;
 }
 
 export interface SupabaseConfig {

@@ -224,6 +224,7 @@ interface DataObjectOptions {
   groupBy?: GroupByConfig;             // Client-side grouping + aggregates
   relationships?: RelationshipConfig[]; // PostgREST embeds (alias, foreignKey, nested)
   allowedBuckets?: string[];           // Storage buckets this object may upload to
+  makeReactive?: MakeReactive | false; // Per-object override of the manager's makeReactive
 }
 ```
 
@@ -268,6 +269,41 @@ interface SortConfig {
   direction: 'asc' | 'desc';
 }
 ```
+
+## Using with Vue (and other reactive frameworks)
+
+The library has no framework dependency. To make templates update automatically, pass your framework's
+"make observable" function once:
+
+```typescript
+import { reactive } from 'vue';
+
+initializeDataObjectManager({
+  supabaseConfig: { url, anonKey },
+  makeReactive: reactive
+});
+```
+
+Data objects can then be used directly. Plain `reactive({...})` holders work, with no `markRaw`, listeners or `.value`:
+
+```typescript
+const checklistDs = reactive({ checklist: null as DataObject<any> | null });
+checklistDs.checklist = await createDataObject('checklist', { viewName: 'checklists_view', /* ... */ });
+```
+
+```html
+<ProgressBar :total-count="checklistDs.checklist?.currentRecord?.items_count"
+             :completed-count="checklistDs.checklist?.currentRecord?.items_checked_count" />
+```
+
+The following are all observable: `data`, `recordCount`, `currentRecord`, `fields`, `groupedData`,
+`hasChanges` / `changedRecords`, every `state.*` flag, and every record's columns, `hasChanges` and `changes`.
+Changes are tracked per record, so editing one row only re-renders what reads that row.
+Any function with the same shape also works, e.g. MobX `observable` or Solid `createMutable`.
+Without `makeReactive`, nothing changes: use `onDataChanged` / `on(...)` as before (e.g. in React).
+Pass `makeReactive: false` in a data object's options to opt that object out. Only do this for objects that aren't
+bound directly in templates (e.g. large lookups used in code). An opted-out object's data stays correct, but templates
+won't update when server changes arrive, so they appear "one change behind". Drive those from `onDataChanged` instead.
 
 ## Error Handling
 

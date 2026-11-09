@@ -39,6 +39,7 @@ export type { DataObjectErrorHandler } from './dataObject';
 export type { DataRecord } from './dataRecord';
 export type { DataObjectState } from './dataObjectState';
 export type { DataObjectGroup } from './grouping';
+export type { MakeReactive } from './reactivity';
 
 // Utility functions for initialization
 import { DataObjectManager, type DataObjectManagerConfig } from './dataObjectManager';
